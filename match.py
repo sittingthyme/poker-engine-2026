@@ -15,6 +15,7 @@ import requests
 
 from gym_env import PokerEnv
 
+NUM_PLAYERS = 6
 TIME_LIMIT_SECONDS = 1500
 GET_ACTION_ENDPOINT = "/get_action"
 SEND_OBS_ENDPOINT = "/post_observation"
@@ -156,7 +157,7 @@ def call_agent_api(
         raise
 
 
-bankrolls = [0, 0]  # Track total bankrolls across all hands
+bankrolls = [0] * NUM_PLAYERS  # Track total bankrolls across all hands
 
 
 def run_api_match(
@@ -237,10 +238,16 @@ def run_api_match(
 
 time_used_0 = 0.0
 time_used_1 = 0.0
+time_used = [0.0] * NUM_PLAYERS
 
 
 def play_hand(
-    env: PokerEnv, base_url_0: str, base_url_1: str, logger: logging.Logger, writer: csv.DictWriter, hand_number: int
+    env: PokerEnv, 
+    base_url_0: str, 
+    base_url_1: str, 
+    logger: logging.Logger, 
+    writer: csv.DictWriter, 
+    hand_number: int
 ):
     """
     Play a single hand in the given environment instance.
@@ -338,7 +345,15 @@ def play_hand(
 
     return {"bot0_reward": reward0, "bot1_reward": reward1}
 
-
+def play_hand(
+    env: PokerEnv, 
+    base_urls: Tuple[str], # for 6 players
+    logger: logging.Logger, 
+    writer: csv.DictWriter, 
+    hand_number: int
+):
+    global bankrolls, time_used
+    
 def get_match_result(
     status: str,
     winner: Optional[int] = None,
@@ -421,3 +436,4 @@ def format_bankroll_log(game_number: int, bankrolls: list) -> str:
         "bot1_bankroll": int(bankrolls[1]),
     }
     return json.dumps(bankroll_data)
+
