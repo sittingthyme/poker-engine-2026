@@ -8,7 +8,6 @@ import logging
 import time
 import traceback
 from typing import Any, Dict, Optional, Tuple, List
-from deprecated import deprecated
 
 import numpy as np
 import requests
@@ -160,7 +159,7 @@ def call_agent_api(
 
 bankrolls = [0] * NUM_PLAYERS  # Track total bankrolls across all hands
 
-
+# TODO: fix csv writer once, 6 player support is finished
 def run_api_match(
     base_url_0: str,
     base_url_1: str,
@@ -194,10 +193,11 @@ def run_api_match(
 
     with open(csv_path, "w", newline="") as csv_file:
         # Comment header
-        csv_file.write(f"# Team 0: {team_0_name}, Team 1: {team_1_name}\n")
+        writer = None
+        # csv_file.write(f"Team 0: {team_0_name}, Team 1: {team_1_name}\n")
 
-        writer = csv.DictWriter(csv_file, fieldnames=csv_headers)
-        writer.writeheader()
+        # writer = csv.DictWriter(csv_file, fieldnames=csv_headers)
+        # writer.writeheader()
 
         def format_error(e):
             return f'ERROR Raised: "{str(e)}". Stacktrace:\n{traceback.format_exc()}'
@@ -240,111 +240,6 @@ def run_api_match(
 time_used_0 = 0.0
 time_used_1 = 0.0
 time_used = [0.0] * NUM_PLAYERS
-
-@deprecated(reason='need to support')
-def play_hand(
-    env: PokerEnv, 
-    base_url_0: str, 
-    base_url_1: str, 
-    logger: logging.Logger, 
-    writer: csv.DictWriter, 
-    hand_number: int
-):
-    """
-    Play a single hand in the given environment instance.
-    This function loops until the single hand terminates.
-    """
-    global time_used_0, time_used_1, bankrolls
-
-    small_blind_player = hand_number % 2
-
-    # Initialize per-hand variables
-    (obs0, obs1), info = env.reset(options={"small_blind_player": small_blind_player})
-    info["hand_number"] = hand_number
-    reward0 = reward1 = 0
-    terminated = truncated = False
-    obs0["time_used"] = time_used_0
-    obs0["time_left"] = TIME_LIMIT_SECONDS - time_used_0
-
-    obs1["time_used"] = time_used_1
-    obs1["time_left"] = TIME_LIMIT_SECONDS - time_used_1
-
-    obs1["opp_last_action"] = "None"
-    obs0["opp_last_action"] = "None"
-
-    bot_0_last_move: Optional[PokerEnv.ActionType] = None
-    bot_1_last_move: Optional[PokerEnv.ActionType] = None
-
-    # Loop until hand terminates
-    while not terminated:
-        bot0_payload = prepare_payload(obs0, reward0, terminated, truncated, info)
-        bot1_payload = prepare_payload(obs1, reward1, terminated, truncated, info)
-
-        current_player = obs0["acting_agent"]
-        current_payload = bot0_payload if current_player == 0 else bot1_payload
-        observer_payload = bot1_payload if current_player == 0 else bot0_payload
-        current_url = base_url_0 if current_player == 0 else base_url_1
-        observer_url = base_url_1 if current_player == 0 else base_url_0
-
-        action_start = time.time()
-        action = call_agent_api("GET", current_url, GET_ACTION_ENDPOINT, current_payload, logger, current_player)
-        action_duration = time.time() - action_start
-        action_type = PokerEnv.ActionType(action["action"][0])
-
-        # Update time tracking
-        if current_player == 0:
-            time_used_0 += action_duration
-            if time_used_0 > TIME_LIMIT_SECONDS:
-                raise TimeoutError("Player 0 exceeded time limit")
-            
-            bot_0_last_move = action_type
-        else:
-            time_used_1 += action_duration
-            if time_used_1 > TIME_LIMIT_SECONDS:
-                raise TimeoutError("Player 1 exceeded time limit")
-        
-            bot_1_last_move = action_type
-
-        # Notify other player
-        call_agent_api("POST", observer_url, SEND_OBS_ENDPOINT, observer_payload, logger, 1 - current_player)
-
-        # Log action
-        current_state = {
-            "hand_number": hand_number,
-            "street": get_street_name(obs0["street"]),
-            "active_team": obs0["acting_agent"],
-            "team_0_bankroll": bankrolls[0],
-            "team_1_bankroll": bankrolls[1],
-            "team_0_cards": [env.int_card_to_str(c) for c in env.player_cards[0] if c != -1],
-            "team_1_cards": [env.int_card_to_str(c) for c in env.player_cards[1] if c != -1],
-            "board_cards": [env.int_card_to_str(c) for c in env.community_cards[: obs0["street"] + 2] if c != -1],
-            "team_0_discarded": env.int_card_to_str(env.discarded_cards[0]) if env.discarded_cards[0] != -1 else "",
-            "team_1_discarded": env.int_card_to_str(env.discarded_cards[1]) if env.discarded_cards[1] != -1 else "",
-            "team_0_bet": obs0["my_bet"] if obs0["acting_agent"] == 0 else obs0["opp_bet"],
-            "team_1_bet": obs1["my_bet"] if obs1["acting_agent"] == 1 else obs1["opp_bet"],
-            "action_type": action_type.name,
-            "action_amount": action["action"][1],
-        }
-        writer.writerow(current_state)
-
-        # Step environment
-        (obs0, obs1), (reward0, reward1), terminated, truncated, info = env.step(action=action["action"])
-        info["hand_number"] = hand_number  # Maintain hand number after each step
-        
-        obs0["time_used"] = time_used_0
-        obs1["time_used"] = time_used_1
-        obs0["time_left"] = TIME_LIMIT_SECONDS - time_used_0
-        obs1["time_left"] = TIME_LIMIT_SECONDS - time_used_1
-        
-        obs1["opp_last_action"] = "None" if bot_0_last_move is None else bot_0_last_move.name
-        obs0["opp_last_action"] = "None" if bot_1_last_move is None else bot_1_last_move.name
-    # game has terminated; prepare and send final observation
-    bot0_payload = prepare_payload(obs0, reward0, terminated, truncated, info)
-    bot1_payload = prepare_payload(obs1, reward1, terminated, truncated, info)
-    call_agent_api("POST", base_url_0, SEND_OBS_ENDPOINT, bot0_payload, logger, 0)
-    call_agent_api("POST", base_url_1, SEND_OBS_ENDPOINT, bot1_payload, logger, 1)
-
-    return {"bot0_reward": reward0, "bot1_reward": reward1}
 
 # TODO handle if there exists less than 6 players at the table
 def play_hand(
