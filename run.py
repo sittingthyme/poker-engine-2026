@@ -26,16 +26,16 @@ def main():
     bot0_class = load_agent_class(config['bot0']['file_path'])
     bot1_class = load_agent_class(config['bot1']['file_path'])
 
-    # Create processes using the configuration
+    # Create processes using the configuration (stream=True so agent logs appear in console)
     process0 = multiprocessing.Process(
         target=bot0_class.run,
-        args=(False, config['bot0']['port']),
-        kwargs = {"player_id": config['bot0']['player_id']}
+        args=(True, config['bot0']['port']),
+        kwargs={"player_id": config['bot0']['player_id']}
     )
     process1 = multiprocessing.Process(
         target=bot1_class.run,
-        args=(False, config['bot1']['port']),
-        kwargs = {"player_id": config['bot1']['player_id']}
+        args=(True, config['bot1']['port']),
+        kwargs={"player_id": config['bot1']['player_id']}
     )
 
     process0.start()
