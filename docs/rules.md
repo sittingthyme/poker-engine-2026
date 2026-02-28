@@ -9,17 +9,17 @@
 
 Compute resources will increase in phases throughout the tournament:
 
-1. **Phase 1** (until March 23, 11:59PM EST):
+1. **Phase 1** (until March 15, 11:59PM EST):
    - 1 vCPU
    - 2GB RAM per bot
    - 500 seconds time limit per match
 
-2. **Phase 2** (March 24 - March 25, 11:59PM EST):
+2. **Phase 2** (March 16 - March 17, 11:59PM EST):
    - 2 vCPU
    - 4GB RAM per bot
    - 1000 seconds time limit per match
 
-3. **Final Phase** (March 26 - March 29, 11:00AM EST):
+3. **Final Phase** (March 18 - March 20, 11:59PM EST):
    - 4 vCPU
    - 8GB RAM per bot
    - 1500 seconds time limit per match
@@ -43,7 +43,7 @@ Our tournament uses a modified version of Texas Hold'em with unique features:
 
 ### Card Deck
 
-- A standard 52 card deck. No jokers
+- A **27-card deck**: three suits (♦ diamonds, ♥ hearts, ♠ spades) and nine ranks (2, 3, 4, 5, 6, 7, 8, 9, A). No face cards (10, J, Q, K) and no clubs. No jokers.
 
 ### Hand Rankings
 
@@ -54,35 +54,32 @@ From strongest to weakest:
    - Example: A♦ 2♦ 3♦ 4♦ 5♦ (Ace can be low)
    - Example: 6♦ 7♦ 8♦ 9♦ A♦ (Ace can be high)
 
-2. **Four of a Kind**: Four cards of the same rank
-   - Example: 7♣ 7♦ 7♥ 7♠ 4♥
-
-3. **Full House**: Three of a kind plus a pair
+2. **Full House**: Three of a kind plus a pair
    - Example: 7♦ 7♥ 7♠ 4♦ 4♥
 
-4. **Flush**: Five cards of the same suit
+3. **Flush**: Five cards of the same suit
    - Example: 2♦ 4♦ 6♦ 8♦ 9♦
 
-5. **Straight**: Five consecutive cards of any suit
+4. **Straight**: Five consecutive cards of any suit
    - Example: 5♦ 6♥ 7♦ 8♠ 9♥
    - Example: A♦ 2♥ 3♠ 4♦ 5♥ (Ace can be low)
    - Example: 6♦ 7♥ 8♠ 9♦ A♥ (Ace can be high)
 
-6. **Three of a Kind**: Three cards of the same rank
+5. **Three of a Kind**: Three cards of the same rank
    - Example: 8♦ 8♥ 8♠ 2♦ 3♥
 
-7. **Two Pair**: Two different pairs
+6. **Two Pair**: Two different pairs
    - Example: 9♦ 9♥ 3♦ 3♥ 8♠
 
-8. **One Pair**: Two cards of the same rank
+7. **One Pair**: Two cards of the same rank
    - Example: A♦ A♥ 7♦ 4♠ 2♥
 
-9. **High Card**: Highest single card
+8. **High Card**: Highest single card
    - Example: A♦ 8♠ 6♥ 4♦ 2♠
 
 > **Special Ace Rule**: The Ace (A) can be used as either high (above 9) or low (below 2) when forming straights and straight flushes.
 >
-> Note: Four-of-a-kind is impossible with this deck configuration since there are only three suits.
+> **Note**: Four-of-a-kind is impossible with this deck (only three suits).
 
 ### Discard Rule
 
@@ -94,7 +91,7 @@ From strongest to weakest:
 
 ## Tournament Structure
 
-### Open Season (Feb 22 - Feb 29, 2025)
+### Open Season (March 14, 2:00 PM – March 20, 11:59 PM EST, 2026)
 
 - **Format**: ELO-based ranking system
 - **Match Structure**:
@@ -118,7 +115,7 @@ In addition to regular matchmaking, teams can request specific matches:
 - Match results do not count towards official rankings
 - Use for testing and practice purposes
 
-### Finals (February 29, 2025)
+### Finals (March 21, 2026)
 
 - **Format**: Round-robin tournament between top 12 teams by ELO
 - **Location**: Giant Eagle Auditorium (Baker Hall A51)
@@ -127,12 +124,7 @@ In addition to regular matchmaking, teams can request specific matches:
 
 ## Important Dates
 
-- **Competition Opens**: February 22, 2025
-- **Finals**: February 29, 2025
-- **Submission Deadline**: March 29, 2025, 11:00AM EST
-
-## Legal
-
-See the full rules and terms of service [here](https://poker.cmudsc.com/terms/).
-
-See the privacy policy [here](https://poker.cmudsc.com/privacy/).
+- **Competition Opens**: March 14, 2026, 2:00 PM EST
+- **Competition Closes**: March 20, 2026, 11:59 PM EST
+- **Finals**: March 21, 2026
+- **Submission Deadline**: March 14, 2026, 2:00 PM EST

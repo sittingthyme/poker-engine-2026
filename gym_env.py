@@ -20,8 +20,37 @@ from gym import spaces
 from treys import Card, Evaluator
 
 class WrappedEval(Evaluator):
+    def __init__(self):
+        super().__init__()
+
     def evaluate(self, hand: list[int], board: list[int]) -> int:
-        return super().evaluate(hand, board)
+        """
+        This is the function that the user calls to get a hand rank.
+
+        No input validation because that's cycles!
+        """
+
+        def ace_to_ten(treys_card: int):
+            """Convert trey's representation of an Ace to trey's representation of a Ten"""
+            as_str = Card.int_to_str(treys_card)
+            alt = as_str.replace("A", "T")  # treys uses "T" for ten
+            alt_as_treys = Card.new(alt)
+            return alt_as_treys
+
+        # check for the edge case of Ace used as high card after a 9
+        alt_hand = list(map(ace_to_ten, hand))
+        alt_board = list(map(ace_to_ten, board))
+
+        reg_score = super().evaluate(hand, board)  # regular score
+        alt_score = super().evaluate(
+            alt_hand, alt_board
+        )  # score if aces were tens
+
+        if alt_score < reg_score:
+            # explicit branch for pytorch coverage
+            return alt_score
+
+        return reg_score
 
 class PokerEnv(gym.Env):
     SMALL_BLIND_PLAYER = 0
@@ -31,14 +60,14 @@ class PokerEnv(gym.Env):
     NUM_COMMUNITY_CARDS = 5
     NUM_DISCARD_CARDS = 3
 
-    RANKS = "23456789TJQKA"
-    SUITS = "dhsc"  # diamonds hearts spade
+    RANKS = "23456789A"  # 9 ranks (2-9, Ace); no face cards
+    SUITS = "dhs"  # diamonds, hearts, spades (27 cards total)
 
     @staticmethod
     def int_to_card(card_int: int):
         """
-        Convert from our encoding of a card, an integer on [0, 52)
-        to the trey's encoding of a card, an integer desiged for fast lookup & comparison
+        Convert from our encoding of a card, an integer on [0, 27)
+        to the treys encoding of a card for hand evaluation.
         """
         return Card.new(PokerEnv.int_card_to_str(card_int))
 
@@ -57,7 +86,7 @@ class PokerEnv(gym.Env):
         DISCARD = 4
         INVALID = 5
 
-    def __init__(self, logger=None, small_blind_amount=1, num_hands=1):
+    def __init__(self, logger=None, small_blind_amount=10, num_hands=1):
         """
         Represents a single hand of poker.
         """
@@ -82,7 +111,7 @@ class PokerEnv(gym.Env):
             ]
         )
 
-        # Card space is a Discrete(28), -1 means the card is not shown
+        # Card space is Discrete(28): -1 for unknown, 0-26 for cards in the 27-card deck
         cards_space = spaces.Discrete((len(self.SUITS) * len(self.RANKS)) + 1, start=-1)
 
         # Single observation space is a Dict.
@@ -209,7 +238,7 @@ class PokerEnv(gym.Env):
         Default is random deal, but options can be provided to set the initial state.
 
         options is a dict with the following keys:
-        - cards: a list of 52 cards to be used in the game
+        - cards: a list of 27 cards (indices 0-26) to be used in the game
         """
         super().reset(seed=seed)
         self.street = 0

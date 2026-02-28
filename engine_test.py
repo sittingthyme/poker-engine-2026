@@ -42,18 +42,17 @@ Testing Poker Variant:
 """
 
 
-RANKS = "23456789TJQKA"
-SUITS = "dhsc"
+# 27-card deck: 9 ranks (2-9, A), 3 suits (d, h, s) — matches PokerEnv
+RANKS = "23456789A"
+SUITS = "dhs"
 
 logging.basicConfig(level=logging.DEBUG)
 
 
 def int_to_card_str(card_int: int):
     """
-    Convert from our encoding of a card, an integer on [0, 52)
-    to the trey's encoding of a card, an integer desiged for fast lookup & comparison
+    Convert from our encoding of a card, an integer on [0, 27), to rank+suit string.
     """
-
     rank = RANKS[card_int % len(RANKS)]
     suit = SUITS[card_int // len(RANKS)]
     return rank + suit
@@ -232,11 +231,11 @@ def test_allways_check():
     states = [({}, {})] * len(actions)
     assert len(actions) == len(states)
     updates = list(zip(actions, states))
-    # draws p0's 2 cards, then p1's 2 cards, then 5 community cards, starting at 0th index of rigged_deck
+    # 27-card deck: only 2-9, A and d,h,s. P0 folds so outcome is P1 wins.
     rigged_deck = list(map(card_str_to_int, [
-        "Ah", "Ad", "2c", "2s", "2d",
-        "9h", "9d", "3c", "3s", "3d",
-        "As", "9s", "2h", "3h", "4h" 
+        "Ah", "Ad", "5d", "2s", "2d",
+        "9h", "9d", "5h", "3s", "3d",
+        "As", "9s", "2h", "3h", "4h"
     ]))
     _test_engine(rigged_deck=rigged_deck, updates=updates, expected_final_rewards=(2, -2))
 
@@ -273,12 +272,12 @@ def test_allways_raise_small():
     states = [({}, {})] * len(actions)
     updates = list(zip(actions, states))
 
-    # Rigged deck (15 cards total)
+    # Rigged deck (15 cards, 27-card variant)
     rigged_deck = list(map(card_str_to_int, [
         # p0's 5 cards (4h and 4d are the first two, which we 'keep')
-        "4h", "4d", "2s", "2c", "2d",
+        "4h", "4d", "2s", "5d", "2d",
         # p1's 5 cards (6h and 7d are kept)
-        "6h", "7d", "3s", "3c", "3d",
+        "6h", "7d", "3s", "5h", "3d",
         # community cards
         "4s", "9s", "9h", "2h", "Ah"
     ]))
@@ -319,16 +318,14 @@ def test_example_tie():
     states = [({}, {})] * len(actions)
     updates = list(zip(actions, states))
 
-    # Rigged deck (15 cards)
-    # We provide 5 cards per player, but ensure the first two (kept) 
-    # don't beat the board's straight.
+    # Rigged deck (15 cards, 27-card variant). First two kept don't beat board straight.
     rigged_deck = list(map(card_str_to_int, [
         # p0's 5 cards (Keeps 2h, 3d)
-        "2h", "3d", "4c", "4s", "4d",
+        "2h", "3d", "4h", "4s", "4d",
         # p1's 5 cards (Keeps 2d, 3s)
-        "2d", "3s", "4h", "2s", "3c",
-        # community cards: A straight on the board
-        "9s", "8s", "7h", "6h", "5h"
+        "2d", "3s", "5h", "2s", "3h",
+        # community cards: a straight on the board
+        "9s", "8s", "7d", "6d", "5d"
     ]))
 
     _test_engine(
@@ -409,10 +406,11 @@ def test_example_game_2():
     """
     A game with an invalid raise (under-raise) on player 1 (BB).
     """
+    # 27-card deck: indices 0-26 only
     rigged_deck = [
-        24, 14, 1, 2, 3,  # p0 cards
-        11, 23, 4, 5, 6,  # p1 cards
-        10, 20, 30, 40, 50 # board
+        24, 14, 1, 2, 3,   # p0 cards
+        11, 23, 4, 5, 6,   # p1 cards
+        10, 20, 12, 18, 26 # board
     ]
     
     expected_final_rewards = (2, -2)
@@ -496,13 +494,11 @@ def test_discard_showdown_integrity():
     """
     Verifies that discarded cards do not influence hand strength at showdown.
     """
+    # 27-card deck: P0 keeps Ah,2h (high card); P1 keeps pair of 9s
     rigged_deck = list(map(card_str_to_int, [
-        # P0: Hand is 4 hearts (Flush potential) but we keep 2 and 3 of different suits
-        "Ah", "2h", "3h", "4h", "5h", 
-        # P1: Keeps a Pair of 9s
-        "9c", "9s", "2c", "3c", "4c",
-        # Board: Random cards that don't help either
-        "Jd", "Th", "7s", "6c", "2d"
+        "Ah", "2h", "3h", "4h", "5h",
+        "9d", "9s", "2d", "3d", "4d",
+        "8d", "5h", "7s", "6h", "2d"
     ]))
     
     actions = [
@@ -555,13 +551,11 @@ def test_discard_showdown_integrity_v2():
     Non-trivial: Rigged so P0 discards a Flush and is left with High Card.
     P1 keeps a simple Pair. Pair must win.
     """
+    # 27-card deck: P0 keeps Ad,2d; P1 keeps pair of 8s
     rigged_deck = list(map(card_str_to_int, [
-        # P0: Hand has 4 Diamonds (Flush) - We will discard 3 of them.
-        "Ad", "2d", "Jd", "9d", "5s", 
-        # P1: Keeps a Pair of 8s
-        "8c", "8s", "3c", "4c", "5c",
-        # Board: Nothing that helps diamonds or creates a straight
-        "2s", "4h", "7h", "Tc", "6s"
+        "Ad", "2d", "7d", "9d", "5s",
+        "8d", "8s", "3d", "4d", "5d",
+        "2s", "4h", "7h", "5h", "6s"
     ]))
     
     # P0 keeps indices 0 and 1 (Ad, 2d). All other diamonds are GONE.
