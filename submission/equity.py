@@ -1,0 +1,166 @@
+"""
+Monte Carlo equity calculator for the 27-card poker variant.
+
+Computes win probability by simulating random opponent hands and board run-outs,
+taking into account all known/revealed cards (own cards, community cards,
+opponent discards, own discards).
+"""
+
+import random
+from treys import Card, Evaluator
+
+# ---------------------------------------------------------------------------
+# Constants mirroring the engine
+# ---------------------------------------------------------------------------
+RANKS = "23456789A"
+SUITS = "dhs"
+DECK_SIZE = 27  # 9 ranks * 3 suits
+
+# ---------------------------------------------------------------------------
+# Card conversion helpers (self-contained so submission/ has no gym_env import)
+# ---------------------------------------------------------------------------
+
+def int_to_treys(card_int: int) -> int:
+    """Convert our 0-26 card encoding to treys internal integer."""
+    rank = RANKS[card_int % len(RANKS)]
+    suit = SUITS[card_int // len(RANKS)]
+    return Card.new(rank + suit)
+
+
+def _ace_to_ten(treys_card: int) -> int:
+    """Convert treys Ace to treys Ten for high-straight detection."""
+    s = Card.int_to_str(treys_card)
+    return Card.new(s.replace("A", "T"))
+
+
+# Singleton evaluator -- constructed once, reused everywhere
+_evaluator = Evaluator()
+
+
+def evaluate_hand(hand_treys: list[int], board_treys: list[int]) -> int:
+    """
+    Evaluate a hand (2 cards) + board (5 cards) using the tournament's
+    Ace-can-be-high (above 9) rule.  Lower score = better hand.
+    """
+    reg = _evaluator.evaluate(hand_treys, board_treys)
+    alt_hand = list(map(_ace_to_ten, hand_treys))
+    alt_board = list(map(_ace_to_ten, board_treys))
+    alt = _evaluator.evaluate(alt_hand, alt_board)
+    return min(reg, alt)
+
+
+# ---------------------------------------------------------------------------
+# Core equity function
+# ---------------------------------------------------------------------------
+
+def compute_equity(
+    my_cards: list[int],
+    community_cards: list[int],
+    opp_discarded: list[int] | None = None,
+    my_discarded: list[int] | None = None,
+    num_simulations: int = 300,
+) -> float:
+    """
+    Monte Carlo equity (win-rate) for *my_cards* vs a random opponent.
+
+    Parameters
+    ----------
+    my_cards : list[int]
+        Our hole cards (2 cards, 0-26 encoding).
+    community_cards : list[int]
+        Visible board cards (0-5 cards, -1 entries ignored).
+    opp_discarded : list[int] | None
+        Opponent's revealed discards (-1 entries ignored).
+    my_discarded : list[int] | None
+        Our own discards (-1 entries ignored).
+    num_simulations : int
+        Number of random roll-outs.
+
+    Returns
+    -------
+    float  in [0, 1]  –  estimated probability of winning.
+    """
+    if opp_discarded is None:
+        opp_discarded = []
+    if my_discarded is None:
+        my_discarded = []
+
+    # Build the set of all known / dead cards
+    known: set[int] = set(my_cards)
+    board: list[int] = []
+    for c in community_cards:
+        if c != -1:
+            known.add(c)
+            board.append(c)
+    for c in opp_discarded:
+        if c != -1:
+            known.add(c)
+    for c in my_discarded:
+        if c != -1:
+            known.add(c)
+
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+
+    opp_needed = 2
+    board_needed = 5 - len(board)
+    sample_size = opp_needed + board_needed
+
+    if sample_size > len(remaining):
+        return 0.5  # not enough unknowns to simulate
+
+    # Pre-convert our cards once
+    my_treys = [int_to_treys(c) for c in my_cards]
+
+    wins = 0
+    total = 0
+
+    for _ in range(num_simulations):
+        sample = random.sample(remaining, sample_size)
+        opp_cards = sample[:opp_needed]
+        full_board = board + sample[opp_needed:]
+
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in full_board]
+
+        my_rank = evaluate_hand(my_treys, board_treys)
+        opp_rank = evaluate_hand(opp_treys, board_treys)
+
+        if my_rank < opp_rank:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
+def best_discard(
+    hole_cards: list[int],
+    community_cards: list[int],
+    opp_discarded: list[int] | None = None,
+    sims_per_pair: int = 350,
+) -> tuple[int, int, float]:
+    """
+    Evaluate all C(5,2)=10 ways to keep 2 of 5 hole cards.
+
+    Returns (keep_idx_1, keep_idx_2, best_equity).
+    """
+    best_i, best_j = 0, 1
+    best_eq = -1.0
+
+    for i in range(5):
+        for j in range(i + 1, 5):
+            keep = [hole_cards[i], hole_cards[j]]
+            discards = [hole_cards[k] for k in range(5) if k != i and k != j]
+            eq = compute_equity(
+                keep,
+                community_cards,
+                opp_discarded=opp_discarded,
+                my_discarded=discards,
+                num_simulations=sims_per_pair,
+            )
+            if eq > best_eq:
+                best_eq = eq
+                best_i, best_j = i, j
+
+    return best_i, best_j, best_eq
