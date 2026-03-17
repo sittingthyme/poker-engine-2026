@@ -15,9 +15,20 @@ from submission.opponent_model import OpponentModel
 # ---------------------------------------------------------------------------
 
 # Base equity bands (adjusted dynamically based on opponent)
-BASE_STRONG_EQUITY = 0.82       # base value-bet / raise territory (higher = more conservative)
-BASE_MEDIUM_EQUITY = 0.60       # base call territory (higher = fold more, call less)
+# 27-card deck: straights/flushes/full house are common; two pair is vulnerable – play tight
+BASE_STRONG_EQUITY = 0.85       # value-bet/raise only with very strong hands (was 0.82)
+BASE_MEDIUM_EQUITY = 0.65       # call only with solid equity (was 0.60)
 BASE_BLUFF_EQUITY_CEIL = 0.20   # base bluff range ceiling
+
+# Extra equity margin when calling (short deck: avoid thin calls vs draws)
+CALL_MARGIN_ABOVE_POT_ODDS = 0.10   # require equity >= pot_odds + this to call (was 0.06)
+# Minimum equity to call in marginal branch (avoid calling with weak draws)
+MIN_EQUITY_TO_CALL_MARGINAL = 0.55
+# Street-specific call floors: later streets need stronger hands (no cards to come)
+TURN_MIN_EQUITY_CALL = 0.58
+RIVER_MIN_EQUITY_CALL = 0.62
+# Extra margin on river when facing a big bet (>=50% pot)
+RIVER_BIG_BET_EXTRA_MARGIN = 0.08
 
 # Dynamic threshold adjustments
 TIGHT_OPPONENT_STRONG_ADJ = -0.05   # Lower threshold vs tight (more aggressive)
@@ -30,6 +41,28 @@ VALUE_RAISE_FRAC = 0.60     # standard value raise
 STRONG_RAISE_FRAC = 0.80    # big value raise for very strong hands
 BLUFF_RAISE_FRAC = 0.40     # bluff sizing (smaller to risk less)
 
+# Preflop open-raise sizing (multiples of BB=2)
+PREFLOP_OPEN_RAISE_MULTIPLIER = 3.5  # raise to 3.5x BB = 7 chips (top bots use 5-9x)
+PREFLOP_3BET_MULTIPLIER = 3.0        # 3-bet to 3x the incoming raise
+
+# Re-raise threshold: when facing a bet, re-raise for value if equity >= this
+RERAISE_EQUITY_THRESHOLD = 0.78
+
+# Value betting: when checked to, bet with medium-strong hands instead of checking
+VALUE_BET_EQUITY = 0.72
+
+# Continuation bet (c-bet): bet the flop when we raised preflop, even without a strong hand
+CBET_EQUITY_THRESHOLD = 0.45   # c-bet with 45%+ equity on the flop
+CBET_FRAC = 0.55               # c-bet size: 55% of pot
+CBET_GIVE_UP_EQUITY = 0.30     # don't c-bet with very weak hands (below 30%)
+
+# Preflop escalation cap: stop re-raising if already committed this many chips
+PREFLOP_RERAISE_CAP = 16
+PREFLOP_PREMIUM_EQUITY = 0.70  # only keep re-raising with top equity
+
+# Hand strength floor: never fold trips or better on the river (treys rank_class <= 6)
+TRIPS_OR_BETTER_RANK_CLASS = 6
+
 # Bluff parameters – nearly eliminated vs math-based opponents
 BASE_BLUFF_FREQ = 0.02      # base bluff frequency (very conservative)
 MAX_BLUFF_FREQ = 0.08       # cap even vs very foldy opponents
@@ -37,6 +70,9 @@ MIN_HANDS_FOR_ADAPT = 20    # hands before trusting opponent model
 
 # Position bonus: being in position (acting last) is an advantage
 IP_EQUITY_BONUS = 0.03      # small bonus when in position post-flop
+
+# Opponent checked: they showed weakness – lower the bar to value bet (we’re more likely to have the best hand)
+OPP_CHECK_STRONG_EQUITY_DISCOUNT = 0.05   # require 5% less equity to value bet when opp checked
 
 # Calling thresholds when facing aggression
 AGG_CALL_DISCOUNT = 0.05    # widen call range vs hyper-aggressive opponents
@@ -240,11 +276,15 @@ def decide_action(
     observation: dict,
     opp_model: OpponentModel,
     info: dict | None = None,
+    hand_rank_class: int | None = None,
 ) -> tuple[int, int, int, int]:
     """
     Choose (action_type, raise_amount, keep1, keep2) for a betting decision.
 
     action_type values: FOLD=0, RAISE=1, CHECK=2, CALL=3
+
+    hand_rank_class: optional treys rank class (1=SF..9=high card).
+        When provided on the river, used to enforce a strength floor.
     """
     valid = observation["valid_actions"]
     street = observation["street"]
@@ -256,13 +296,30 @@ def decide_action(
     # Fold-to-win: if we can fold every remaining hand and still win, do it
     _info = info or {}
     acting_agent = observation.get("acting_agent", 0)
-    my_bankroll = float(_info.get("bankroll_0" if acting_agent == 0 else "bankroll_1", 0))
-    opp_bankroll = float(_info.get("bankroll_1" if acting_agent == 0 else "bankroll_0", 0))
+    # Support both bankroll_0/1 (local match) and team_0_bankroll/team_1_bankroll (tournament)
+    key_my = "bankroll_0" if acting_agent == 0 else "bankroll_1"
+    key_opp = "bankroll_1" if acting_agent == 0 else "bankroll_0"
+    alt_my = "team_0_bankroll" if acting_agent == 0 else "team_1_bankroll"
+    alt_opp = "team_1_bankroll" if acting_agent == 0 else "team_0_bankroll"
+    my_bankroll = float(_info.get(key_my, _info.get(alt_my, 0)))
+    opp_bankroll = float(_info.get(key_opp, _info.get(alt_opp, 0)))
     hand_number = int(_info.get("hand_number", 0))
     hands_left = 1000 - hand_number
+    # Need lead > 1 chip per remaining hand so folding every hand still leaves us ahead
     min_lead_to_fold = 2 * hands_left
     if valid[0] and hands_left > 0 and my_bankroll > min_lead_to_fold:
         return (0, 0, 0, 0)  # FOLD
+
+    # Cost to continue (computed early for preflop cap check)
+    continue_cost = opp_bet - my_bet
+
+    # Preflop escalation cap: stop re-raising when already committed heavily
+    # unless we have premium equity.  Just call to see a flop.
+    if street == 0 and continue_cost > 0 and my_bet >= PREFLOP_RERAISE_CAP and equity < PREFLOP_PREMIUM_EQUITY:
+        if valid[3]:
+            return (3, 0, 0, 0)  # CALL – see a flop cheaply
+        if valid[0]:
+            return (0, 0, 0, 0)  # FOLD if can't call
 
     # Compute pot and blind position from available fields
     # (pot_size and blind_position may be stripped by Pydantic in API mode)
@@ -277,8 +334,6 @@ def decide_action(
     # Adjust equity for position
     adj_equity = equity + (IP_EQUITY_BONUS if in_position else 0.0)
 
-    # Cost to continue
-    continue_cost = opp_bet - my_bet
     pot_odds = continue_cost / (continue_cost + pot) if continue_cost > 0 else 0.0
 
     # Opponent adaptation
@@ -309,15 +364,21 @@ def decide_action(
             strong_equity += LOOSE_OPPONENT_STRONG_ADJ
             medium_equity += LOOSE_OPPONENT_MEDIUM_ADJ
     
-    # Street-specific adjustments (can be more aggressive on later streets)
-    if street == 3:  # River
-        # More information, can be slightly more aggressive
-        strong_equity -= 0.02
-        medium_equity -= 0.02
-    elif street == 0:  # Pre-flop
-        # Less information, be slightly tighter
+    # Street-specific: stay tight on all streets (short deck – draws hit often)
+    if street == 0:  # Pre-flop
         strong_equity += 0.02
         medium_equity += 0.02
+    # Pre-flop when facing only the BB (or tiny call): don’t require 70% to call – we’d fold too much as SB
+    if street == 0 and continue_cost > 0 and continue_cost <= 2 and pot <= 6:
+        medium_equity = min(medium_equity, 0.52)  # call BB with 52%+ equity instead of 70%
+    # River: when we can bet (no bet to call), value-bet two pair+ – we’re only behind trips/boats/AA
+    if street == 3 and continue_cost == 0:
+        strong_equity = min(strong_equity, 0.68)  # value bet with 68%+ on river (two pair usually 70%+)
+
+    # Opponent checked: they showed weakness – we’re more likely to have the best hand, so value bet with slightly less equity
+    opp_last = (observation.get("opp_last_action") or "").upper()
+    if continue_cost == 0 and opp_last == "CHECK":
+        strong_equity = max(0.50, strong_equity - OPP_CHECK_STRONG_EQUITY_DISCOUNT)
 
     # Against hyper-aggressive opponents, widen our calling range
     call_threshold_adj = 0.0
@@ -405,13 +466,38 @@ def decide_action(
                 return heuristic_action
         return blended_action
 
+    # ---- Hand-strength floor: never fold trips or better on the river ----
+    if (
+        street == 3
+        and hand_rank_class is not None
+        and hand_rank_class <= TRIPS_OR_BETTER_RANK_CLASS
+        and continue_cost > 0
+    ):
+        # We have trips+.  Always at least call; raise if equity is high.
+        if adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]:
+            frac = VALUE_RAISE_FRAC
+            raw = int(pot * frac)
+            amount = max(min_raise, min(raw, max_raise))
+            return (1, amount, 0, 0)
+        if valid[3]:
+            return (3, 0, 0, 0)
+
     # ---- Heuristic decision tree (existing logic) ----
 
-    # 1. STRONG HAND: value bet / raise
+    # 1. STRONG HAND: value bet / raise (high bar in short deck)
     if adj_equity >= strong_equity:
         if valid[1]:  # RAISE
-            frac = STRONG_RAISE_FRAC if adj_equity >= 0.88 else VALUE_RAISE_FRAC
-            raw = int(pot * frac)
+            if street == 0:
+                # Preflop: use BB-based sizing instead of pot-fraction
+                if continue_cost <= 0 or my_bet <= 2:
+                    # Open-raise or first raise: 3.5x BB
+                    raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
+                else:
+                    # 3-bet: 3x the incoming raise
+                    raw = int(opp_bet * PREFLOP_3BET_MULTIPLIER)
+            else:
+                frac = STRONG_RAISE_FRAC if adj_equity >= 0.92 else VALUE_RAISE_FRAC
+                raw = int(pot * frac)
             amount = max(min_raise, min(raw, max_raise))
             action = (1, amount, 0, 0)
         elif valid[3]:  # CALL
@@ -422,25 +508,84 @@ def decide_action(
             action = (0, 0, 0, 0)
         return _choose_final(action)
 
-    # 2. MEDIUM HAND: call if pot odds are right, play passively
+    # 2. MEDIUM HAND: value bet / re-raise / call depending on situation
     effective_medium = medium_equity + call_threshold_adj
+    min_equity_to_call = pot_odds + CALL_MARGIN_ABOVE_POT_ODDS if continue_cost > 0 else 0.0
+    # Tighten call floor on later streets (no more cards to improve)
+    if street >= 3:
+        call_floor = RIVER_MIN_EQUITY_CALL
+    elif street >= 2:
+        call_floor = TURN_MIN_EQUITY_CALL
+    else:
+        call_floor = MIN_EQUITY_TO_CALL_MARGINAL
+    # River facing big bet: demand extra margin
+    if street == 3 and continue_cost > 0 and pot > 0:
+        river_bet_frac = continue_cost / pot
+        if river_bet_frac >= 0.50:
+            min_equity_to_call += RIVER_BIG_BET_EXTRA_MARGIN
+
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
         if continue_cost > 0:
-            if adj_equity >= pot_odds and valid[3]:
+            # Re-raise for value when equity is near the top of the medium band
+            if adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]:
+                if street == 0:
+                    raw = int(opp_bet * PREFLOP_3BET_MULTIPLIER)
+                else:
+                    raw = int(pot * VALUE_RAISE_FRAC)
+                amount = max(min_raise, min(raw, max_raise))
+                action = (1, amount, 0, 0)
+            elif adj_equity >= max(min_equity_to_call, call_floor) and valid[3]:
                 action = (3, 0, 0, 0)
         else:
-            if valid[2]:
+            if street == 0 and valid[1]:
+                # Preflop open-raise with medium hands too
+                raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
+                amount = max(min_raise, min(raw, max_raise))
+                action = (1, amount, 0, 0)
+            elif adj_equity >= VALUE_BET_EQUITY and valid[1]:
+                # Post-flop: value bet with medium-strong hands
+                raw = int(pot * VALUE_RAISE_FRAC)
+                amount = max(min_raise, min(raw, max_raise))
+                action = (1, amount, 0, 0)
+            elif valid[2]:
                 action = (2, 0, 0, 0)
             elif valid[3]:
                 action = (3, 0, 0, 0)
         return _choose_final(action)
 
-    # 3. MARGINAL HAND: call if cheap enough relative to equity
-    if continue_cost > 0 and adj_equity >= pot_odds:
+    # 2.5. CONTINUATION BET: on the flop when checked to, bet with decent equity
+    if (street == 1
+            and continue_cost == 0
+            and valid[1]
+            and adj_equity >= CBET_EQUITY_THRESHOLD
+            and adj_equity >= CBET_GIVE_UP_EQUITY):
+        raw = int(pot * CBET_FRAC)
+        amount = max(min_raise, min(raw, max_raise))
+        return _choose_final((1, amount, 0, 0))
+
+    # 3. MARGINAL HAND: call only if equity clearly above pot odds and above floor (avoid weak draws)
+    marginal_min_eq = pot_odds + CALL_MARGIN_ABOVE_POT_ODDS
+    # Use street-specific floor (river/turn require stronger hands)
+    if street >= 3:
+        marginal_floor = RIVER_MIN_EQUITY_CALL
+    elif street >= 2:
+        marginal_floor = TURN_MIN_EQUITY_CALL
+    else:
+        marginal_floor = MIN_EQUITY_TO_CALL_MARGINAL
+    # River facing big bet: extra margin
+    if street == 3 and continue_cost > 0 and pot > 0 and continue_cost / pot >= 0.50:
+        marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
+    if continue_cost > 0 and adj_equity >= marginal_min_eq and adj_equity >= marginal_floor:
         if valid[3]:
             action = (3, 0, 0, 0)
             return _choose_final(action)
+
+    # Preflop with marginal hand and no cost: still open-raise (don't limp)
+    if street == 0 and continue_cost <= 0 and valid[1]:
+        raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
+        amount = max(min_raise, min(raw, max_raise))
+        return _choose_final((1, amount, 0, 0))
 
     if valid[2]:
         # Check, but sometimes bluff-raise (only vs very foldy opponents)

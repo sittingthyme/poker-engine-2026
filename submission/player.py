@@ -9,7 +9,7 @@ inside the submission/ package.
 from agents.agent import Agent
 from gym_env import PokerEnv
 
-from submission.equity import compute_equity, best_discard
+from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class
 from submission.opponent_model import OpponentModel
 from submission.strategy import decide_action
 
@@ -26,6 +26,10 @@ class PlayerAgent(Agent):
         self._current_hand: int | None = None
         self._my_discarded: list[int] = []
         self._blind_position: int = 0  # 0=SB, 1=BB; detected at hand start
+        # Self-tracked state for fold-to-win (works even when runner doesn't pass bankroll/hand_number)
+        self._my_cumulative_reward: float = 0.0
+        self._hands_played: int = 0
+        self._last_cards_hash: int = 0  # detect new hand by card change
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -36,7 +40,19 @@ class PlayerAgent(Agent):
 
     def act(self, observation, reward, terminated, truncated, info):
         """Choose an action given the current observation."""
-        hand_num = info.get("hand_number", 0)
+        info = info or {}
+        self._my_cumulative_reward += float(reward)
+
+        # Detect new hand: prefer info["hand_number"], fall back to card-change detection
+        cards_hash = hash(tuple(observation.get("my_cards", ())))
+        if "hand_number" in info:
+            hand_num = info["hand_number"]
+        elif cards_hash != self._last_cards_hash and observation.get("street", 0) == 0:
+            self._hands_played += 1
+            hand_num = self._hands_played
+        else:
+            hand_num = self._current_hand if self._current_hand is not None else 0
+        self._last_cards_hash = cards_hash
 
         # Detect new hand → reset per-hand state & tell opponent model
         if hand_num != self._current_hand:
@@ -70,13 +86,14 @@ class PlayerAgent(Agent):
             return self._do_discard(observation)
 
         # ---- Betting phase ----
-        return self._do_bet(observation, info)
+        return self._do_bet(observation, info, hand_num)
 
     def observe(self, observation, reward, terminated, truncated, info):
         """
         Called when it is NOT our turn – the opponent just acted.
         We use this to update the opponent model.
         """
+        self._my_cumulative_reward += float(reward)
         # Track opponent action from the extra field injected by the engine
         opp_action_name = observation.get("opp_last_action", "None")
         if opp_action_name not in ("None", None):
@@ -134,8 +151,24 @@ class PlayerAgent(Agent):
         )
         return (self.action_types.DISCARD.value, 0, keep_i, keep_j)
 
-    def _do_bet(self, obs, info: dict | None = None) -> tuple[int, int, int, int]:
+    def _do_bet(self, obs, info: dict | None = None, hand_num: int | None = None) -> tuple[int, int, int, int]:
         """Equity-driven betting decision with adaptive simulation scaling."""
+        info = dict(info) if info else {}
+        # When match/tournament doesn't pass bankroll, use our own tracking so fold-to-win works
+        need_bankroll = (
+            "bankroll_0" not in info or "bankroll_1" not in info
+            or info.get("bankroll_0") is None or info.get("bankroll_1") is None
+        )
+        if need_bankroll:
+            acting = obs.get("acting_agent", 0)
+            if acting == 0:
+                info["bankroll_0"] = self._my_cumulative_reward
+                info["bankroll_1"] = -self._my_cumulative_reward
+            else:
+                info["bankroll_0"] = -self._my_cumulative_reward
+                info["bankroll_1"] = self._my_cumulative_reward
+        if info.get("hand_number") is None and hand_num is not None:
+            info["hand_number"] = hand_num
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
         opp_disc = [c for c in obs.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
@@ -179,15 +212,24 @@ class PlayerAgent(Agent):
         # Ensure minimum of 100 sims for reasonable accuracy
         n_sims = max(100, min(n_sims, 1200))  # Phase 2: cap at 1200
 
-        equity = compute_equity(
-            my_cards[:2],
-            community,
-            opp_discarded=opp_disc if opp_disc else None,
-            my_discarded=self._my_discarded if self._my_discarded else None,
-            num_simulations=n_sims,
-        )
+        # Preflop: use best 2 of 5 equity; post-flop: use our 2 kept cards
+        if street == 0 and len(my_cards) == 5:
+            equity = compute_equity_best2_of5(my_cards, num_simulations=n_sims)
+        else:
+            equity = compute_equity(
+                my_cards[:2],
+                community,
+                opp_discarded=opp_disc if opp_disc else None,
+                my_discarded=self._my_discarded if self._my_discarded else None,
+                num_simulations=n_sims,
+            )
 
-        action = decide_action(equity, obs, self.opp_model, info=info or {})
+        # On the river, evaluate actual hand strength so we never fold trips+
+        hand_rank_class = None
+        if street == 3 and len(my_cards) >= 2 and len(community) == 5:
+            hand_rank_class = get_hand_rank_class(my_cards, community)
+
+        action = decide_action(equity, obs, self.opp_model, info=info or {}, hand_rank_class=hand_rank_class)
 
         # Log time usage for monitoring
         if time_ratio < 0.50:
