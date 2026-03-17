@@ -12,6 +12,7 @@ from gym_env import PokerEnv
 from submission.equity import compute_equity, best_discard
 from submission.opponent_model import OpponentModel
 from submission.strategy import decide_action
+from submission.strategy_table import StrategyTable
 
 
 class PlayerAgent(Agent):
@@ -21,6 +22,7 @@ class PlayerAgent(Agent):
 
         # Persistent across the entire 1000-hand match
         self.opp_model = OpponentModel()
+        self.strategy_table = StrategyTable.load()
 
         # Per-hand bookkeeping
         self._current_hand: int | None = None
@@ -101,12 +103,12 @@ class PlayerAgent(Agent):
         # Time-aware scaling for discard phase
         time_left = obs.get("time_left", 500.0)
         time_used = obs.get("time_used", 0.0)
-        # Calculate time limit from time_used + time_left, or default to Phase 1 limit (500s)
-        time_limit = time_used + time_left if (time_used > 0 or time_left < 500) else 500.0
+        total = time_used + time_left
+        time_limit = total if total > 0 else 1000.0  # Phase 2 default
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
         # Base discard simulations (evaluating 10 pairs, so each pair gets sims_per_pair)
-        base_sims = 250  # Reduced from 350 for efficiency
+        base_sims = 350  # Phase 2: increased from 250 for better discard decisions
 
         # Apply time scaling
         if time_ratio < 0.30:
@@ -141,20 +143,19 @@ class PlayerAgent(Agent):
 
         street = obs["street"]
         pot = obs.get("pot_size", obs["my_bet"] + obs["opp_bet"])
-        time_left = obs.get("time_left", 500.0)  # Default to 500s if not available
+        time_left = obs.get("time_left", 500.0)
         time_used = obs.get("time_used", 0.0)
-        # Calculate time limit from time_used + time_left, or default to Phase 1 limit (500s)
-        time_limit = time_used + time_left if (time_used > 0 or time_left < 500) else 500.0
+        total = time_used + time_left
+        time_limit = total if total > 0 else 1000.0  # Phase 2 default
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
-        # Base simulation counts (optimized for efficiency)
-        # Reduced from 600/800/1000 to more efficient levels
+        # Base simulation counts (Phase 2: increased for 1000s time bank)
         if street <= 1:
-            base_sims = 300  # Pre-flop/flop: less critical, use fewer sims
+            base_sims = 450  # Pre-flop/flop
         elif street == 2:
-            base_sims = 400  # Turn: medium importance
+            base_sims = 550  # Turn
         else:
-            base_sims = 600  # River: most critical, but still reduced from 1000
+            base_sims = 850  # River: most critical
 
         # Scale by pot size importance (larger pots = more important decisions)
         # Pot size typically ranges from 2-200+ chips
@@ -177,7 +178,7 @@ class PlayerAgent(Agent):
         # Calculate final simulation count
         n_sims = int(base_sims * pot_multiplier * time_multiplier)
         # Ensure minimum of 100 sims for reasonable accuracy
-        n_sims = max(100, min(n_sims, 800))  # Cap at 800 to prevent excessive computation
+        n_sims = max(100, min(n_sims, 1200))  # Phase 2: cap at 1200
 
         equity = compute_equity(
             my_cards[:2],
@@ -187,7 +188,7 @@ class PlayerAgent(Agent):
             num_simulations=n_sims,
         )
 
-        action = decide_action(equity, obs, self.opp_model)
+        action = decide_action(equity, obs, self.opp_model, strategy_table=self.strategy_table)
 
         # Log time usage for monitoring
         if time_ratio < 0.50:

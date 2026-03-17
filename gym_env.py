@@ -14,9 +14,14 @@ import logging
 import os
 from enum import Enum
 
-import gym
+try:
+    import gym  # type: ignore
+    from gym import spaces
+except ModuleNotFoundError:  # pragma: no cover
+    # Tournament environment uses Gymnasium; allow local runs without `gym`.
+    import gymnasium as gym  # type: ignore
+    from gymnasium import spaces
 import numpy as np
-from gym import spaces
 from treys import Card, Evaluator
 
 class WrappedEval(Evaluator):
