@@ -60,7 +60,12 @@ class _StreetStats:
     def large_raise_rate(self) -> float:
         """Fraction of raises that are large (80%+ pot)."""
         return self.large_raises / self.raises if self.raises else 0.0
-    
+
+    @property
+    def avg_raise_fraction(self) -> float:
+        """Average raise size as fraction of pot (total_raise_amount / total_pot_size)."""
+        return self.total_raise_amount / self.total_pot_size if self.total_pot_size > 0 else 0.0
+
     def update_recent_trends(self, fold_rate: float, aggression: float, decay: float = 0.7):
         """Update recent trends with exponential decay."""
         if self.recent_actions == 0:
@@ -212,6 +217,11 @@ class OpponentModel:
     def avg_raise_size(self, street: int | None = None) -> float:
         bucket = self.streets[street] if street is not None else self.overall
         return bucket.avg_raise_size
+
+    def avg_raise_fraction(self, street: int | None = None) -> float:
+        """Typical raise size as fraction of pot. Returns 0 if no data."""
+        bucket = self.streets[street] if street is not None else self.overall
+        return bucket.avg_raise_fraction
 
     @property
     def hands_seen(self) -> int:

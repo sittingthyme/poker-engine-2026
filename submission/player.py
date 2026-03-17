@@ -54,7 +54,8 @@ class PlayerAgent(Agent):
             elif my_bet == 2 and opp_bet == 1:
                 self._blind_position = 1  # BB
             else:
-                self._blind_position = 0  # fallback
+                # Use engine's blind_position when bets don't reveal it (e.g. both limped)
+                self._blind_position = observation.get("blind_position", 0)
 
         # Inject computed fields that may be missing in API mode
         observation["pot_size"] = observation.get(

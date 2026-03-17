@@ -307,8 +307,12 @@ def play_hand(
         
             bot_1_last_move = action_type
 
-        # Notify other player
-        call_agent_api("POST", observer_url, SEND_OBS_ENDPOINT, observer_payload, logger, 1 - current_player)
+        # Notify other player with the action that was just taken
+        observer_payload_to_send = dict(observer_payload)
+        observer_obs = dict(observer_payload_to_send["observation"])
+        observer_obs["opp_last_action"] = action_type.name
+        observer_payload_to_send["observation"] = observer_obs
+        call_agent_api("POST", observer_url, SEND_OBS_ENDPOINT, observer_payload_to_send, logger, 1 - current_player)
 
         def fmt_cards(cards_list):
             return [env.int_card_to_str(c) for c in cards_list if c != -1]

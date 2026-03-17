@@ -42,6 +42,15 @@ IP_EQUITY_BONUS = 0.03      # small bonus when in position post-flop
 # Calling thresholds when facing aggression
 AGG_CALL_DISCOUNT = 0.05    # widen call range vs hyper-aggressive opponents
 
+# Bet size → hand strength inference (large bet = likely stronger hand)
+BET_FRAC_LARGE = 0.80      # bet ≥ 80% of pot = big bet
+BET_FRAC_MEDIUM = 0.50     # bet ≥ 50% of pot = medium bet
+EQUITY_DISCOUNT_LARGE = 0.05   # discount when facing big bet
+EQUITY_DISCOUNT_MEDIUM = 0.02  # discount when facing medium bet
+# Current bet vs history: unusually large = likely strong
+BET_VS_HISTORY_THRESHOLD = 1.5   # current bet >= 1.5x their typical -> extra discount
+EQUITY_DISCOUNT_VS_HISTORY = 0.03  # extra discount when bet is unusually large
+
 # Table strategy mode: "off" | "simple" | "conf"
 # - off: heuristic only, table never used
 # - simple: fixed 30% blend when table has entry
@@ -304,6 +313,28 @@ def decide_action(
     if adapted and opp_agg > 2.0:
         call_threshold_adj = -AGG_CALL_DISCOUNT
 
+    # Bet size → hand strength: large bets suggest stronger opponent hand
+    if continue_cost > 0 and pot > 0:
+        bet_fraction = continue_cost / pot
+        discount = 0.0
+        if bet_fraction >= BET_FRAC_LARGE:
+            discount = EQUITY_DISCOUNT_LARGE
+        elif bet_fraction >= BET_FRAC_MEDIUM:
+            discount = EQUITY_DISCOUNT_MEDIUM
+        if discount > 0 and adapted:
+            tendency = opp_model.bet_sizing_tendency(street)
+            if tendency == "large":
+                discount *= 0.5  # they often bet big, may overbet bluffs
+            elif tendency == "small":
+                discount *= 1.25  # big bet is unusual = likely strong
+        # Current bet vs history: unusually large compared to their typical sizing
+        bucket = opp_model.streets[min(street, 3)]
+        if adapted and bucket.raises >= 5:
+            avg_frac = bucket.avg_raise_fraction
+            if avg_frac > 0.05 and bet_fraction >= avg_frac * BET_VS_HISTORY_THRESHOLD:
+                discount += EQUITY_DISCOUNT_VS_HISTORY
+        adj_equity -= discount
+
     # ---- Optional baseline policy via StrategyTable (blended with heuristic) ----
     blended_action: tuple[int, int, int, int] | None = None
     use_table = strategy_table is not None and TABLE_MODE in ("simple", "conf")
@@ -384,12 +415,14 @@ def decide_action(
     effective_medium = medium_equity + call_threshold_adj
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
-        if continue_cost > 0 and adj_equity >= pot_odds and valid[3]:
-            action = (3, 0, 0, 0)
-        if valid[2]:
-            action = (2, 0, 0, 0)
-        if valid[3]:
-            action = (3, 0, 0, 0)
+        if continue_cost > 0:
+            if adj_equity >= pot_odds and valid[3]:
+                action = (3, 0, 0, 0)
+        else:
+            if valid[2]:
+                action = (2, 0, 0, 0)
+            elif valid[3]:
+                action = (3, 0, 0, 0)
         return _choose_final(action)
 
     # 3. MARGINAL HAND: call if cheap enough relative to equity
