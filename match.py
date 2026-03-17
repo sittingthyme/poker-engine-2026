@@ -65,18 +65,7 @@ def prepare_payload(
 ) -> Dict[str, Any]:
     """
     Prepare the payload for API calls by converting numpy arrays and values to Python native types.
-
-    Args:
-        obs (Dict[str, Any]): The observation dictionary.
-        reward (float): The reward value.
-        terminated (bool): Whether the episode has terminated.
-        truncated (bool): Whether the episode has been truncated.
-        info (Dict[str, Any]): Additional information.
-
-    Returns:
-        Dict[str, Any]: The prepared payload.
     """
-
     def _convert_numpy(v):
         if isinstance(v, np.integer):
             return int(v)
@@ -110,24 +99,6 @@ def call_agent_api(
     logger: logging.Logger,
     player_id: int,
 ) -> Dict[str, Any]:
-    """
-    Make an API call to an agent with retry logic and failure tracking.
-
-    Args:
-        method (str): The HTTP method to use.
-        base_url (str): The base URL of the agent's API.
-        endpoint (str): The API endpoint to call.
-        payload (Dict[str, Any]): The payload to send with the request.
-        logger (logging.Logger): Logger instance.
-        player_id (int): ID of the player (0 or 1).
-
-    Returns:
-        Dict[str, Any]: The JSON response from the API.
-
-    Raises:
-        TimeoutError: If the player exceeds their time limit.
-        AgentFailure: If both players are failing or one player consistently fails.
-    """
     max_retries = 5
     base_delay = 1
 
@@ -145,7 +116,6 @@ def call_agent_api(
             ) as e:
                 if attempt == max_retries - 1:
                     raise
-
                 delay = base_delay * (2**attempt)
                 logger.info(f"Backing off for {delay} seconds before retry {attempt + 1}")
                 if 'response' in locals() and response is not None:
@@ -158,7 +128,7 @@ def call_agent_api(
         raise
 
 
-bankrolls = [0, 0]  # Track total bankrolls across all hands
+bankrolls = [0, 0]
 
 
 def run_api_match(
@@ -170,34 +140,16 @@ def run_api_match(
     team_0_name: str = "Team 0",
     team_1_name: str = "Team 1",
 ) -> Dict[str, Any]:
-    """
-    Run a match of multiple hands between two API-based agents.
-    Each iteration creates a new PokerEnv instance representing one hand.
-    """
     global bankrolls
     csv_headers = [
-        "hand_number",
-        "street",
-        "active_team",
-        "team_0_bankroll",
-        "team_1_bankroll",
-        "action_type",
-        "action_amount",
-        "action_keep_1",
-        "action_keep_2",
-        "team_0_cards",
-        "team_1_cards",
-        "board_cards",
-        "team_0_discarded",
-        "team_1_discarded",
-        "team_0_bet",
-        "team_1_bet",
+        "hand_number", "street", "active_team", "team_0_bankroll", "team_1_bankroll",
+        "action_type", "action_amount", "action_keep_1", "action_keep_2",
+        "team_0_cards", "team_1_cards", "board_cards", "team_0_discarded", "team_1_discarded",
+        "team_0_bet", "team_1_bet",
     ]
 
     with open(csv_path, "w", newline="") as csv_file:
-        # Comment header
         csv_file.write(f"# Team 0: {team_0_name}, Team 1: {team_1_name}\n")
-
         writer = csv.DictWriter(csv_file, fieldnames=csv_headers)
         writer.writeheader()
 
@@ -205,7 +157,7 @@ def run_api_match(
             return f'ERROR Raised: "{str(e)}". Stacktrace:\n{traceback.format_exc()}'
 
         for hand_number in range(num_hands):
-            env = PokerEnv(logger=logger)  # env for a single hand
+            env = PokerEnv(logger=logger)
             (obs0, obs1), info = env.reset()
             try:
                 res = play_hand(env, base_url_0, base_url_1, logger, writer, hand_number)
@@ -216,15 +168,12 @@ def run_api_match(
                         f"Hand number: {hand_number}, {team_0_name} bankroll: {bankrolls[0]}, {team_1_name} bankroll: {bankrolls[1]}"
                     )
             except TimeoutError as te:
-                # Determine winner based on which player exceeded time
                 winner = 1 if "Player 0" in str(te) else 0
                 return get_match_result("timeout", winner=winner)
             except AgentFailure as af:
                 if "Player 0 has failed" in str(af):
-                    # player 0 timeout
                     return get_match_result("timeout", winner=1)
                 elif "Player 1 has failed" in str(af):
-                    # player 1 timeout
                     return get_match_result("timeout", winner=0)
                 return get_match_result("error", error=format_error(af))
             except Exception as e:
@@ -235,7 +184,6 @@ def run_api_match(
         logger.info(f"Final results - {team_0_name} bankroll: {bankrolls[0]}, {team_1_name} bankroll: {bankrolls[1]}")
         logger.info(f"Time used - {team_0_name}: {time_used_0:.2f} seconds, {team_1_name}: {time_used_1:.2f} seconds")
         logger.info(f"Time limit: {TIME_LIMIT_SECONDS} seconds")
-
         return get_match_result("completed", rewards=(bankrolls[0], bankrolls[1]))
 
 
@@ -246,32 +194,23 @@ time_used_1 = 0.0
 def play_hand(
     env: PokerEnv, base_url_0: str, base_url_1: str, logger: logging.Logger, writer: csv.DictWriter, hand_number: int
 ):
-    """
-    Play a single hand in the given environment instance.
-    This function loops until the single hand terminates.
-    """
     global time_used_0, time_used_1, bankrolls
 
     small_blind_player = hand_number % 2
-
-    # Initialize per-hand variables
     (obs0, obs1), info = env.reset(options={"small_blind_player": small_blind_player})
     info["hand_number"] = hand_number
     reward0 = reward1 = 0
     terminated = truncated = False
     obs0["time_used"] = time_used_0
     obs0["time_left"] = TIME_LIMIT_SECONDS - time_used_0
-
     obs1["time_used"] = time_used_1
     obs1["time_left"] = TIME_LIMIT_SECONDS - time_used_1
-
     obs1["opp_last_action"] = "None"
     obs0["opp_last_action"] = "None"
 
     bot_0_last_move: Optional[PokerEnv.ActionType] = None
     bot_1_last_move: Optional[PokerEnv.ActionType] = None
 
-    # Loop until hand terminates
     while not terminated:
         info["bankroll_0"] = bankrolls[0]
         info["bankroll_1"] = bankrolls[1]
@@ -288,28 +227,24 @@ def play_hand(
         action = call_agent_api("GET", current_url, GET_ACTION_ENDPOINT, current_payload, logger, current_player)
         action_duration = time.time() - action_start
 
-        raw_action = action["action"] # Expecting [Type, Amount, Idx1, Idx2]
+        raw_action = action["action"]
         act_type_int = raw_action[0]
         act_amount = raw_action[1]
         act_keep1 = raw_action[2]
         act_keep2 = raw_action[3]
         action_type = PokerEnv.ActionType(act_type_int)
 
-        # Update time tracking
         if current_player == 0:
             time_used_0 += action_duration
             if time_used_0 > TIME_LIMIT_SECONDS:
                 raise TimeoutError("Player 0 exceeded time limit")
-            
             bot_0_last_move = action_type
         else:
             time_used_1 += action_duration
             if time_used_1 > TIME_LIMIT_SECONDS:
                 raise TimeoutError("Player 1 exceeded time limit")
-        
             bot_1_last_move = action_type
 
-        # Notify other player with the action that was just taken
         observer_payload_to_send = dict(observer_payload)
         observer_obs = dict(observer_payload_to_send["observation"])
         observer_obs["opp_last_action"] = action_type.name
@@ -320,7 +255,6 @@ def play_hand(
             return [env.int_card_to_str(c) for c in cards_list if c != -1]
 
         num_board_cards = 0 if obs0["street"] == 0 else obs0["street"] + 2
-        # Log action using pre-step observations; we'll adjust the action_type after stepping if it was invalid.
         current_state = {
             "hand_number": hand_number,
             "street": get_street_name(obs0["street"]),
@@ -340,23 +274,20 @@ def play_hand(
             "action_keep_2": act_keep2,
         }
 
-        # Step environment
         (obs0, obs1), (reward0, reward1), terminated, truncated, info = env.step(action=action["action"])
-        # If the engine treated this move as invalid (auto-fold), record it as a FOLD in the CSV.
         if info.get("invalid_action"):
             current_state["action_type"] = PokerEnv.ActionType.FOLD.name
 
         writer.writerow(current_state)
-        info["hand_number"] = hand_number  # Maintain hand number after each step
-        
+        info["hand_number"] = hand_number
+
         obs0["time_used"] = time_used_0
         obs1["time_used"] = time_used_1
         obs0["time_left"] = TIME_LIMIT_SECONDS - time_used_0
         obs1["time_left"] = TIME_LIMIT_SECONDS - time_used_1
-        
         obs1["opp_last_action"] = "None" if bot_0_last_move is None else bot_0_last_move.name
         obs0["opp_last_action"] = "None" if bot_1_last_move is None else bot_1_last_move.name
-    # game has terminated; prepare and send final observation
+
     bot0_payload = prepare_payload(obs0, reward0, terminated, truncated, info)
     bot1_payload = prepare_payload(obs1, reward1, terminated, truncated, info)
     call_agent_api("POST", base_url_0, SEND_OBS_ENDPOINT, bot0_payload, logger, 0)
@@ -371,47 +302,26 @@ def get_match_result(
     rewards: Optional[Tuple[float, float]] = None,
     error: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Create a standardized match result dictionary.
-
-    Args:
-        status (str): Match status ('completed', 'timeout', or 'error')
-        winner (Optional[int]): Winner's player ID (0 or 1) for timeout cases
-        rewards (Optional[Tuple[float, float]]): Final bankrolls (bot0_reward, bot1_reward)
-        error (Optional[str]): Error message for error status
-
-    Returns:
-        Dict[str, Any]: Standardized match result containing:
-            - status: 'completed', 'timeout', or 'error'
-            - result: 'win' (player 0 won), 'loss' (player 1 won), 'tie', or 'invalid'
-            - bot0_reward/bot1_reward: Final bankroll amounts (if available)
-            - error: Error message (if status is 'error')
-    """
     global time_used_0, time_used_1
 
     result = {"status": status}
 
-    # Add result field for completed matches
     if status == "completed" and rewards:
-        # Determine winner based on rewards
         if rewards[0] > rewards[1]:
-            result["result"] = "win"  # Player 0 won
+            result["result"] = "win"
         elif rewards[1] > rewards[0]:
-            result["result"] = "loss"  # Player 1 won
+            result["result"] = "loss"
         else:
-            result["result"] = "tie"  # Equal rewards
+            result["result"] = "tie"
     elif status == "timeout" and winner is not None:
-        # Convert timeout winner to win/loss
         result["result"] = "win" if winner == 0 else "loss"
     else:
         result["result"] = "invalid"
 
-    # Add rewards if available
     if rewards:
         result["bot0_reward"] = rewards[0]
         result["bot1_reward"] = rewards[1]
 
-    # Add time used data
     result["bot0_time_used"] = time_used_0
     result["bot1_time_used"] = time_used_1
 
@@ -422,14 +332,6 @@ def get_match_result(
 
 
 def log_game_state(logger: logging.Logger, obs0: Dict[str, Any], obs1: Dict[str, Any]) -> None:
-    """
-    Log the current game state.
-
-    Args:
-        logger (logging.Logger): The logger object to use for logging.
-        obs0 (Dict[str, Any]): Observation for the first agent.
-        obs1 (Dict[str, Any]): Observation for the second agent.
-    """
     logger.debug("#####################")
     logger.debug(f"Turn: {obs0['acting_agent']}")
     logger.debug(f"Bot0 cards: {obs0['my_cards']}, Bot1 cards: {obs1['my_cards']}")
@@ -439,7 +341,6 @@ def log_game_state(logger: logging.Logger, obs0: Dict[str, Any], obs1: Dict[str,
 
 
 def format_bankroll_log(game_number: int, bankrolls: list) -> str:
-    """Format bankroll data as a JSON string for logging"""
     bankroll_data = {
         "type": "bankroll_update",
         "game_number": game_number,
@@ -447,4 +348,3 @@ def format_bankroll_log(game_number: int, bankrolls: list) -> str:
         "bot1_bankroll": int(bankrolls[1]),
     }
     return json.dumps(bankroll_data)
-

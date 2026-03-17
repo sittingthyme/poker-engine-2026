@@ -134,19 +134,95 @@ def compute_equity(
     return wins / total
 
 
+def _rank_index(card_int: int) -> int:
+    return card_int % len(RANKS)
+
+
+def _straight_draw_strength_with_board(keep: list[int], board: list[int]) -> int:
+    """
+    Rank straight potential from kept cards + board ranks.
+
+    Returns
+    -------
+    int
+        0 = no straight draw
+        1 = gutshot draw
+        2 = open-ended draw
+        3 = made straight
+    """
+    ranks = {_rank_index(c) for c in (keep + board)}
+    straight_windows = [
+        {0, 1, 2, 3, 4},
+        {1, 2, 3, 4, 5},
+        {2, 3, 4, 5, 6},
+        {3, 4, 5, 6, 7},
+        {4, 5, 6, 7, 8},
+    ]
+    best = 0
+    for window in straight_windows:
+        present = ranks & window
+        if len(present) == 5:
+            return 3
+        if len(present) == 4:
+            missing = (window - present).pop()
+            lo, hi = min(window), max(window)
+            if missing == lo or missing == hi:
+                best = max(best, 2)  # open-ended
+            else:
+                best = max(best, 1)  # gutshot
+    return best
+
+
+def _has_straight_draw_with_board(keep: list[int], board: list[int]) -> bool:
+    return _straight_draw_strength_with_board(keep, board) >= 1
+
+
+def _has_pair_or_better(keep: list[int], board: list[int]) -> bool:
+    """Whether current keep+board already has at least one pair."""
+    rank_counts: dict[int, int] = {}
+    for c in keep + board:
+        r = _rank_index(c)
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+    return any(cnt >= 2 for cnt in rank_counts.values())
+
+
+def _is_low_pair(keep: list[int]) -> bool:
+    """Treat pairs up to rank 5 as low pairs in this short deck."""
+    if len(keep) != 2:
+        return False
+    r0 = _rank_index(keep[0])
+    r1 = _rank_index(keep[1])
+    return r0 == r1 and r0 <= 3
+
+
+def _keep_rank_key(keep: list[int]) -> tuple[int, int]:
+    """
+    Deterministic tie-break key for 2-card keeps.
+    Higher key means stronger raw ranks (e.g. 9-8 beats 9-3).
+    """
+    r = sorted((_rank_index(c) for c in keep), reverse=True)
+    return r[0], r[1]
+
+
 def best_discard(
     hole_cards: list[int],
     community_cards: list[int],
     opp_discarded: list[int] | None = None,
-    sims_per_pair: int = 350,
+    sims_per_pair: int = 550,
 ) -> tuple[int, int, float]:
     """
     Evaluate all C(5,2)=10 ways to keep 2 of 5 hole cards.
+    Favors straight draws over low pairs in 27-card deck.
 
     Returns (keep_idx_1, keep_idx_2, best_equity).
     """
+    board = [c for c in community_cards if c != -1]
     best_i, best_j = 0, 1
     best_eq = -1.0
+    best_draw_strength = -1
+    best_has_pair_or_better = False
+    best_is_low_pair = False
+    best_rank_key = (-1, -1)
 
     for i in range(5):
         for j in range(i + 1, 5):
@@ -159,8 +235,59 @@ def best_discard(
                 my_discarded=discards,
                 num_simulations=sims_per_pair,
             )
-            if eq > best_eq:
+            draw_strength = _straight_draw_strength_with_board(keep, board)
+            has_sd = draw_strength >= 1
+            has_pair_or_better = _has_pair_or_better(keep, board)
+            is_low = _is_low_pair(keep)
+            rank_key = _keep_rank_key(keep)
+
+            # User policy: prioritize straight draws over non-draw made hands.
+            if draw_strength > best_draw_strength:
                 best_eq = eq
                 best_i, best_j = i, j
+                best_draw_strength = draw_strength
+                best_has_pair_or_better = has_pair_or_better
+                best_is_low_pair = is_low
+                best_rank_key = rank_key
+                continue
+            if draw_strength < best_draw_strength:
+                continue
+
+            # Draw strengths are equal here. Prefer higher equity first.
+            if eq > best_eq + 1e-9:
+                best_eq = eq
+                best_i, best_j = i, j
+                best_has_pair_or_better = has_pair_or_better
+                best_is_low_pair = is_low
+                best_rank_key = rank_key
+                continue
+
+            # Deterministic tie-breaks for near-equal Monte Carlo estimates.
+            if abs(eq - best_eq) <= 0.020:
+                # Prefer straight-draw keep over pair/two-pair keep when tied.
+                if has_sd and best_has_pair_or_better and best_draw_strength == draw_strength:
+                    best_eq = eq
+                    best_i, best_j = i, j
+                    best_has_pair_or_better = has_pair_or_better
+                    best_is_low_pair = is_low
+                    best_rank_key = rank_key
+                    continue
+
+                # Preserve older low-pair guard for non-draw tiebreak spots.
+                if has_sd and best_is_low_pair and not (best_draw_strength >= 1):
+                    best_eq = eq
+                    best_i, best_j = i, j
+                    best_has_pair_or_better = has_pair_or_better
+                    best_is_low_pair = is_low
+                    best_rank_key = rank_key
+                    continue
+
+                # Final tie-break: higher rank keep (e.g. 9-8 > 9-3).
+                if rank_key > best_rank_key:
+                    best_eq = eq
+                    best_i, best_j = i, j
+                    best_has_pair_or_better = has_pair_or_better
+                    best_is_low_pair = is_low
+                    best_rank_key = rank_key
 
     return best_i, best_j, best_eq

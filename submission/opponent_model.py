@@ -63,8 +63,10 @@ class _StreetStats:
 
     @property
     def avg_raise_fraction(self) -> float:
-        """Average raise size as fraction of pot (total_raise_amount / total_pot_size)."""
-        return self.total_raise_amount / self.total_pot_size if self.total_pot_size > 0 else 0.0
+        """Typical raise size as fraction of pot. Returns 0 if no data."""
+        if self.raises == 0 or self.total_pot_size == 0:
+            return 0.0
+        return self.total_raise_amount / self.total_pot_size
 
     def update_recent_trends(self, fold_rate: float, aggression: float, decay: float = 0.7):
         """Update recent trends with exponential decay."""
@@ -97,6 +99,16 @@ class OpponentModel:
         self._small_pot_stats = _StreetStats()  # pots < 10 chips
         self._medium_pot_stats = _StreetStats()  # pots 10-50 chips
         self._large_pot_stats = _StreetStats()  # pots > 50 chips
+
+        # Bet-size response: how they react to our bet sizes
+        self._folds_when_facing_large_bet: int = 0
+        self._actions_when_facing_large_bet: int = 0
+        self._calls_when_facing_small_bet: int = 0
+        self._actions_when_facing_small_bet: int = 0
+
+        # Discard patterns: infer if they keep strong or weak
+        self._discard_quality_sum: float = 0.0
+        self._discard_count: int = 0
 
     # ------------------------------------------------------------------
     # Recording
@@ -188,6 +200,32 @@ class OpponentModel:
         if bucket.actions > 0:
             bucket.update_recent_trends(bucket.fold_rate, bucket.aggression_factor)
 
+    def record_response_to_our_bet(
+        self,
+        street: int,
+        opp_action: str,
+        our_bet_frac: float,
+    ) -> None:
+        """
+        Record opponent's response to our bet (called from observe when we had just acted).
+        our_bet_frac: our bet/raise as fraction of pot when we acted.
+        """
+        if opp_action == "DISCARD":
+            return
+        if our_bet_frac >= 0.70:
+            self._actions_when_facing_large_bet += 1
+            if opp_action == "FOLD":
+                self._folds_when_facing_large_bet += 1
+        elif our_bet_frac > 0 and our_bet_frac < 0.50:
+            self._actions_when_facing_small_bet += 1
+            if opp_action == "CALL":
+                self._calls_when_facing_small_bet += 1
+
+    def record_opponent_discards(self, discard_quality: float) -> None:
+        """Record quality of opponent's 3 discards (higher = they discarded strong cards)."""
+        self._discard_quality_sum += discard_quality
+        self._discard_count += 1
+
     def end_hand(self) -> None:
         """Call at the end of every hand to finalize VPIP."""
         if self._current_hand_vpip:
@@ -241,15 +279,40 @@ class OpponentModel:
             return bucket.recent_aggression
         return bucket.aggression_factor
     
+    @property
+    def fold_to_big_bet_rate(self) -> float | None:
+        """Fraction of times opponent folds when facing our big bet (>=70% pot)."""
+        if self._actions_when_facing_large_bet < 3:
+            return None
+        return self._folds_when_facing_large_bet / self._actions_when_facing_large_bet
+
+    @property
+    def call_small_bet_rate(self) -> float | None:
+        """Fraction of times opponent calls when facing our small bet (<50% pot)."""
+        if self._actions_when_facing_small_bet < 3:
+            return None
+        return self._calls_when_facing_small_bet / self._actions_when_facing_small_bet
+
+    def discard_tendency(self) -> str:
+        """Infer from discard quality: 'keeps_strong', 'keeps_weak', or 'unknown'."""
+        if self._discard_count < 10:
+            return "unknown"
+        avg = self._discard_quality_sum / self._discard_count
+        if avg > 0.55:
+            return "keeps_weak"  # discarded strong cards
+        elif avg < 0.45:
+            return "keeps_strong"  # discarded weak cards
+        return "unknown"
+
     def is_tight(self) -> bool:
         """Classify opponent as tight (low VPIP, high fold rate)."""
-        if self._hands_seen < 20:
+        if self._hands_seen < 12:
             return False  # Not enough data
         return self.vpip < 0.40 and self.overall.fold_rate > 0.50
     
     def is_loose(self) -> bool:
         """Classify opponent as loose (high VPIP, low fold rate)."""
-        if self._hands_seen < 20:
+        if self._hands_seen < 12:
             return False  # Not enough data
         return self.vpip > 0.60 and self.overall.fold_rate < 0.40
     

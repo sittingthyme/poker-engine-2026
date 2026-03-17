@@ -107,7 +107,7 @@ class PlayerAgent(Agent):
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
         # Base discard simulations (evaluating 10 pairs, so each pair gets sims_per_pair)
-        base_sims = 350  # Phase 2: increased from 250 for better discard decisions
+        base_sims = 550  # Phase 2: increased for 27-card deck straight-draw accuracy
 
         # Apply time scaling
         if time_ratio < 0.30:

@@ -15,9 +15,9 @@ from submission.opponent_model import OpponentModel
 # ---------------------------------------------------------------------------
 
 # Base equity bands (adjusted dynamically based on opponent)
-BASE_STRONG_EQUITY = 0.78        # base value-bet / raise territory
-BASE_MEDIUM_EQUITY = 0.55        # base call territory
-BASE_BLUFF_EQUITY_CEIL = 0.20    # base bluff range ceiling
+BASE_STRONG_EQUITY = 0.82       # base value-bet / raise territory (higher = more conservative)
+BASE_MEDIUM_EQUITY = 0.60       # base call territory (higher = fold more, call less)
+BASE_BLUFF_EQUITY_CEIL = 0.20   # base bluff range ceiling
 
 # Dynamic threshold adjustments
 TIGHT_OPPONENT_STRONG_ADJ = -0.05   # Lower threshold vs tight (more aggressive)
@@ -54,7 +54,7 @@ EQUITY_DISCOUNT_VS_HISTORY = 0.03  # extra discount when bet is unusually large
 # - off: heuristic only, table never used
 # - simple: fixed 30% blend when table has entry
 # - conf: confidence-weighted blend + EV safety check
-TABLE_MODE = "conf"
+TABLE_MODE = "off"
 TABLE_BASE_ALPHA = 0.5
 TABLE_VISIT_THRESHOLD = 200
 TABLE_EV_EPSILON = 1.0
@@ -260,8 +260,8 @@ def decide_action(
     opp_bankroll = float(_info.get("bankroll_1" if acting_agent == 0 else "bankroll_0", 0))
     hand_number = int(_info.get("hand_number", 0))
     hands_left = 1000 - hand_number
-    max_fold_loss = 2 * hands_left  # worst case: lose 2 chips/hand when folding
-    if valid[0] and hands_left > 0 and my_bankroll > max_fold_loss:
+    min_lead_to_fold = 2 * hands_left
+    if valid[0] and hands_left > 0 and my_bankroll > min_lead_to_fold:
         return (0, 0, 0, 0)  # FOLD
 
     # Compute pot and blind position from available fields
