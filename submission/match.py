@@ -273,6 +273,8 @@ def play_hand(
 
     # Loop until hand terminates
     while not terminated:
+        info["bankroll_0"] = bankrolls[0]
+        info["bankroll_1"] = bankrolls[1]
         bot0_payload = prepare_payload(obs0, reward0, terminated, truncated, info)
         bot1_payload = prepare_payload(obs1, reward1, terminated, truncated, info)
 

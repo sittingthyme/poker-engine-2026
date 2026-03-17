@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import random
 from submission.opponent_model import OpponentModel
-from submission.strategy_table import StrategyTable
 
 # ---------------------------------------------------------------------------
 # Tunable thresholds
@@ -240,7 +239,7 @@ def decide_action(
     equity: float,
     observation: dict,
     opp_model: OpponentModel,
-    strategy_table: StrategyTable | None = None,
+    info: dict | None = None,
 ) -> tuple[int, int, int, int]:
     """
     Choose (action_type, raise_amount, keep1, keep2) for a betting decision.
@@ -253,6 +252,18 @@ def decide_action(
     opp_bet = observation["opp_bet"]
     min_raise = observation["min_raise"]
     max_raise = observation["max_raise"]
+
+    # Fold-to-win: if we can fold every remaining hand and still win, do it
+    _info = info or {}
+    acting_agent = observation.get("acting_agent", 0)
+    my_bankroll = float(_info.get("bankroll_0" if acting_agent == 0 else "bankroll_1", 0))
+    opp_bankroll = float(_info.get("bankroll_1" if acting_agent == 0 else "bankroll_0", 0))
+    hand_number = int(_info.get("hand_number", 0))
+    hands_left = 1000 - hand_number
+    max_fold_loss = 2 * hands_left  # worst case: lose 2 chips/hand when folding
+    if valid[0] and hands_left > 0 and my_bankroll > max_fold_loss:
+        return (0, 0, 0, 0)  # FOLD
+
     # Compute pot and blind position from available fields
     # (pot_size and blind_position may be stripped by Pydantic in API mode)
     pot = observation.get("pot_size", my_bet + opp_bet)
@@ -337,7 +348,7 @@ def decide_action(
 
     # ---- Optional baseline policy via StrategyTable (blended with heuristic) ----
     blended_action: tuple[int, int, int, int] | None = None
-    use_table = strategy_table is not None and TABLE_MODE in ("simple", "conf")
+    use_table = False
     # Restrict table to high-impact regions: post-flop and medium/large pots only
     pot_band = 0 if pot < 10 else (1 if pot < 50 else 2)
     if street < 1 or pot_band < 1:

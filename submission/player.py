@@ -12,7 +12,6 @@ from gym_env import PokerEnv
 from submission.equity import compute_equity, best_discard
 from submission.opponent_model import OpponentModel
 from submission.strategy import decide_action
-from submission.strategy_table import StrategyTable
 
 
 class PlayerAgent(Agent):
@@ -22,7 +21,6 @@ class PlayerAgent(Agent):
 
         # Persistent across the entire 1000-hand match
         self.opp_model = OpponentModel()
-        self.strategy_table = StrategyTable.load()
 
         # Per-hand bookkeeping
         self._current_hand: int | None = None
@@ -72,7 +70,7 @@ class PlayerAgent(Agent):
             return self._do_discard(observation)
 
         # ---- Betting phase ----
-        return self._do_bet(observation)
+        return self._do_bet(observation, info)
 
     def observe(self, observation, reward, terminated, truncated, info):
         """
@@ -136,7 +134,7 @@ class PlayerAgent(Agent):
         )
         return (self.action_types.DISCARD.value, 0, keep_i, keep_j)
 
-    def _do_bet(self, obs) -> tuple[int, int, int, int]:
+    def _do_bet(self, obs, info: dict | None = None) -> tuple[int, int, int, int]:
         """Equity-driven betting decision with adaptive simulation scaling."""
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
@@ -189,7 +187,7 @@ class PlayerAgent(Agent):
             num_simulations=n_sims,
         )
 
-        action = decide_action(equity, obs, self.opp_model, strategy_table=self.strategy_table)
+        action = decide_action(equity, obs, self.opp_model, info=info or {})
 
         # Log time usage for monitoring
         if time_ratio < 0.50:
