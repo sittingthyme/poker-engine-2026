@@ -252,18 +252,42 @@ def _has_pair_or_better(keep: list[int], board: list[int]) -> bool:
 def _keep_priority(keep: list[int], board: list[int]) -> int:
     """
     Priority tier for discard choice: higher = prefer this keep.
-    - 3: open-ended straight draw or made straight (prioritize over everything)
-    - 2: trips, pair, or two-pair (prioritize over gutshot)
+    - 5: made straight
+    - 4: trips+, two pair, or pocket overpair (never discard these for draws)
+    - 3: open-ended straight draw
+    - 2: pair (single, not overpair)
     - 1: gutshot straight draw only
     - 0: no draw, no pair
     """
     draw_strength = _straight_draw_strength_with_board(keep, board)
-    has_pair = _has_pair_or_better(keep, board)
-    if draw_strength >= 2:  # open-ended or made straight
+
+    if draw_strength == 3:
+        return 5
+
+    rank_counts: dict[int, int] = {}
+    for c in keep + board:
+        r = _rank_index(c)
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+
+    has_trips = any(cnt >= 3 for cnt in rank_counts.values())
+    has_two_pair = sum(1 for cnt in rank_counts.values() if cnt >= 2) >= 2
+    has_pair = any(cnt >= 2 for cnt in rank_counts.values())
+
+    if has_trips or has_two_pair:
+        return 4
+
+    if len(keep) == 2:
+        r0, r1 = _rank_index(keep[0]), _rank_index(keep[1])
+        if r0 == r1:
+            board_ranks = [_rank_index(c) for c in board] if board else []
+            if not board_ranks or r0 >= max(board_ranks):
+                return 4  # pocket overpair — never discard for a draw
+
+    if draw_strength >= 2:
         return 3
-    if has_pair:  # trips, pair, two-pair
+    if has_pair:
         return 2
-    if draw_strength == 1:  # gutshot only
+    if draw_strength == 1:
         return 1
     return 0
 

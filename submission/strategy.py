@@ -43,7 +43,11 @@ BLUFF_RAISE_FRAC = 0.40     # bluff sizing (smaller to risk less)
 
 # Preflop open-raise sizing (multiples of BB=2)
 PREFLOP_OPEN_RAISE_MULTIPLIER = 3.5  # raise to 3.5x BB = 7 chips (top bots use 5-9x)
-PREFLOP_3BET_MULTIPLIER = 3.0        # 3-bet to 3x the incoming raise
+PREFLOP_3BET_MULTIPLIER = 2.5        # 3-bet to 2.5x the incoming raise (down from 3.0)
+
+# Facing a 3-bet: tighter ranges to avoid bloated pots with marginal hands
+PREFLOP_3BET_CALL_MIN_EQUITY = 0.62  # need 62%+ equity to call a 3-bet
+PREFLOP_4BET_MIN_EQUITY = 0.80       # need 80%+ equity to 4-bet (very premium only)
 
 # Re-raise threshold: when facing a bet, re-raise for value if equity >= this
 RERAISE_EQUITY_THRESHOLD = 0.78
@@ -320,6 +324,15 @@ def decide_action(
             return (3, 0, 0, 0)  # CALL – see a flop cheaply
         if valid[0]:
             return (0, 0, 0, 0)  # FOLD if can't call
+
+    # Facing a 3-bet: opponent raised after our raise — tighten ranges
+    if street == 0 and continue_cost > 0 and my_bet > 2 and opp_bet > my_bet:
+        if equity < PREFLOP_3BET_CALL_MIN_EQUITY:
+            if valid[0]:
+                return (0, 0, 0, 0)  # FOLD — not strong enough to call a 3-bet
+        elif equity < PREFLOP_4BET_MIN_EQUITY:
+            if valid[3]:
+                return (3, 0, 0, 0)  # CALL — see a flop, don't escalate
 
     # Compute pot and blind position from available fields
     # (pot_size and blind_position may be stripped by Pydantic in API mode)
