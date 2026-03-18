@@ -27,8 +27,25 @@ MIN_EQUITY_TO_CALL_MARGINAL = 0.55
 # Street-specific call floors: later streets need stronger hands (no cards to come)
 TURN_MIN_EQUITY_CALL = 0.58
 RIVER_MIN_EQUITY_CALL = 0.62
-# Extra margin on river when facing a big bet (>=50% pot)
+# Extra margin when facing a big bet (>=50% pot)
+TURN_BIG_BET_EXTRA_MARGIN = 0.06
 RIVER_BIG_BET_EXTRA_MARGIN = 0.08
+
+# Pot-size tightening: large pots on turn/river signal multi-street aggression
+LARGE_POT_THRESHOLD = 40     # pot >= 40 chips
+LARGE_POT_EQUITY_BUMP = 0.04
+HUGE_POT_THRESHOLD = 80      # pot >= 80 chips
+HUGE_POT_EQUITY_BUMP = 0.04  # cumulative with above → +0.08 for huge pots
+
+# Board flush danger: 3-suit 27-card deck makes flushes very common.
+# When 3+ community cards share a suit, tighten calling if we don't hold the flush.
+FLUSH_DANGER_HIGH_EQUITY_BUMP = 0.10    # 3+ of one suit on board, we hold 0 of that suit
+FLUSH_DANGER_MODERATE_EQUITY_BUMP = 0.04  # 3+ of one suit on board, we hold 1 of that suit
+
+# Paired-board danger: when board has a pair/trips, full houses and quads are common.
+# Tighten if we don't connect with the paired rank ourselves.
+PAIRED_BOARD_HIGH_EQUITY_BUMP = 0.08   # board paired/trips and we don't match that rank at all
+PAIRED_BOARD_MODERATE_EQUITY_BUMP = 0.03  # board paired/trips but we match with 1 card
 
 # Dynamic threshold adjustments
 TIGHT_OPPONENT_STRONG_ADJ = -0.05   # Lower threshold vs tight (more aggressive)
@@ -61,8 +78,8 @@ CBET_FRAC = 0.55               # c-bet size: 55% of pot
 CBET_GIVE_UP_EQUITY = 0.30     # don't c-bet with very weak hands (below 30%)
 
 # Preflop escalation cap: stop re-raising if already committed this many chips
-PREFLOP_RERAISE_CAP = 16
-PREFLOP_PREMIUM_EQUITY = 0.70  # only keep re-raising with top equity
+PREFLOP_RERAISE_CAP = 10
+PREFLOP_PREMIUM_EQUITY = 0.75  # only keep re-raising with top equity
 
 # Hand strength floor: never fold trips or better on the river (treys rank_class <= 6)
 TRIPS_OR_BETTER_RANK_CLASS = 6
@@ -275,6 +292,84 @@ def blind_position_from_obs(observation: dict) -> int:
     return 0  # default fallback
 
 
+def _flush_danger(observation: dict) -> int:
+    """
+    Detect flush danger from board texture in the 3-suit 27-card deck.
+
+    Card encoding: suit = card_int // 9  (0=d, 1=h, 2=s).
+
+    Returns:
+        0 — safe (fewer than 3 of any suit on board, or we hold 2 of that suit)
+        1 — moderate (3+ of one suit on board, we hold exactly 1 of that suit)
+        2 — high (3+ of one suit on board, we hold 0 of that suit)
+    """
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    if len(community) < 3:
+        return 0
+
+    my_cards = [c for c in observation.get("my_cards", []) if c != -1][:2]
+
+    board_suits: dict[int, int] = {}
+    for c in community:
+        s = c // 9
+        board_suits[s] = board_suits.get(s, 0) + 1
+
+    danger_suit = None
+    for s, cnt in board_suits.items():
+        if cnt >= 3:
+            danger_suit = s
+            break
+
+    if danger_suit is None:
+        return 0
+
+    my_suit_count = sum(1 for c in my_cards if c // 9 == danger_suit)
+    if my_suit_count >= 2:
+        return 0  # we likely have the flush
+    if my_suit_count == 1:
+        return 1
+    return 2
+
+
+def _paired_board_danger(observation: dict) -> int:
+    """
+    Detect paired-board danger (full house / quads threat).
+
+    Card encoding: rank = card_int % 9.
+
+    Returns:
+        0 — safe (board has no pair, or we hold 2+ cards matching the paired rank)
+        1 — moderate (board paired and we match the paired rank with exactly 1 card)
+        2 — high (board paired/trips and we don't match the paired rank at all)
+    """
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    if len(community) < 3:
+        return 0
+
+    my_cards = [c for c in observation.get("my_cards", []) if c != -1][:2]
+
+    board_ranks: dict[int, int] = {}
+    for c in community:
+        r = c % 9
+        board_ranks[r] = board_ranks.get(r, 0) + 1
+
+    paired_rank = None
+    for r, cnt in board_ranks.items():
+        if cnt >= 2:
+            paired_rank = r
+            break
+
+    if paired_rank is None:
+        return 0
+
+    my_match = sum(1 for c in my_cards if c % 9 == paired_rank)
+    if my_match >= 2:
+        return 0  # we have trips/quads with the board pair
+    if my_match == 1:
+        return 1  # we have a full house draw / trips
+    return 2
+
+
 def decide_action(
     equity: float,
     observation: dict,
@@ -325,11 +420,13 @@ def decide_action(
         if valid[0]:
             return (0, 0, 0, 0)  # FOLD if can't call
 
-    # Facing a 3-bet: opponent raised after our raise — tighten ranges
-    if street == 0 and continue_cost > 0 and my_bet > 2 and opp_bet > my_bet:
+    # Facing a significant preflop raise: tighten ranges to control pot size.
+    # Triggers vs any raise >= 3x BB (opp_bet >= 6), whether it's an initial
+    # open-raise we're facing from BB or a 3-bet after our open.
+    if street == 0 and continue_cost > 0 and opp_bet >= 6:
         if equity < PREFLOP_3BET_CALL_MIN_EQUITY:
             if valid[0]:
-                return (0, 0, 0, 0)  # FOLD — not strong enough to call a 3-bet
+                return (0, 0, 0, 0)  # FOLD — not strong enough vs a real raise
         elif equity < PREFLOP_4BET_MIN_EQUITY:
             if valid[3]:
                 return (3, 0, 0, 0)  # CALL — see a flop, don't escalate
@@ -398,8 +495,9 @@ def decide_action(
     if adapted and opp_agg > 2.0:
         call_threshold_adj = -AGG_CALL_DISCOUNT
 
-    # Bet size → hand strength: large bets suggest stronger opponent hand
-    if continue_cost > 0 and pot > 0:
+    # Bet size → hand strength: large bets suggest stronger opponent hand.
+    # Skip on preflop — every raise dwarfs the blind pot, making the fraction meaningless.
+    if continue_cost > 0 and pot > 0 and street >= 1:
         bet_fraction = continue_cost / pot
         discount = 0.0
         if bet_fraction >= BET_FRAC_LARGE:
@@ -419,6 +517,10 @@ def decide_action(
             if avg_frac > 0.05 and bet_fraction >= avg_frac * BET_VS_HISTORY_THRESHOLD:
                 discount += EQUITY_DISCOUNT_VS_HISTORY
         adj_equity -= discount
+
+    # ---- Board texture: flush and paired-board danger in 3-suit deck ----
+    flush_danger = _flush_danger(observation) if street >= 1 else 0
+    pair_danger = _paired_board_danger(observation) if street >= 1 else 0
 
     # ---- Optional baseline policy via StrategyTable (blended with heuristic) ----
     blended_action: tuple[int, int, int, int] | None = None
@@ -531,19 +633,41 @@ def decide_action(
         call_floor = TURN_MIN_EQUITY_CALL
     else:
         call_floor = MIN_EQUITY_TO_CALL_MARGINAL
-    # River facing big bet: demand extra margin
-    if street == 3 and continue_cost > 0 and pot > 0:
-        river_bet_frac = continue_cost / pot
-        if river_bet_frac >= 0.50:
+    # Facing a big bet (>=50% pot): demand extra margin
+    if continue_cost > 0 and pot > 0:
+        bet_frac = continue_cost / pot
+        if street == 3 and bet_frac >= 0.50:
             min_equity_to_call += RIVER_BIG_BET_EXTRA_MARGIN
+        elif street == 2 and bet_frac >= 0.50:
+            min_equity_to_call += TURN_BIG_BET_EXTRA_MARGIN
+    # Large pot tightening: multi-street aggression makes marginal hands worse
+    if street >= 2 and pot >= LARGE_POT_THRESHOLD:
+        call_floor += LARGE_POT_EQUITY_BUMP
+    if street >= 2 and pot >= HUGE_POT_THRESHOLD:
+        call_floor += HUGE_POT_EQUITY_BUMP
+    # Flush-heavy board: demand more equity when we don't hold the flush
+    if flush_danger == 2:
+        call_floor += FLUSH_DANGER_HIGH_EQUITY_BUMP
+    elif flush_danger == 1:
+        call_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+    # Paired board: demand more equity when we don't connect with the pair
+    if pair_danger == 2:
+        call_floor += PAIRED_BOARD_HIGH_EQUITY_BUMP
+    elif pair_danger == 1:
+        call_floor += PAIRED_BOARD_MODERATE_EQUITY_BUMP
 
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
         if continue_cost > 0:
-            # Re-raise for value when equity is near the top of the medium band
-            if adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]:
+            # Re-raise for value when equity is near the top of the medium band.
+            # On preflop, only re-raise vs blind completion (opp_bet <= 2);
+            # vs real raises, just call — pot control.
+            can_reraise = adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]
+            if street == 0 and opp_bet > 2:
+                can_reraise = False
+            if can_reraise:
                 if street == 0:
-                    raw = int(opp_bet * PREFLOP_3BET_MULTIPLIER)
+                    raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
                 else:
                     raw = int(pot * VALUE_RAISE_FRAC)
                 amount = max(min_raise, min(raw, max_raise))
@@ -556,11 +680,20 @@ def decide_action(
                 raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
                 amount = max(min_raise, min(raw, max_raise))
                 action = (1, amount, 0, 0)
-            elif adj_equity >= VALUE_BET_EQUITY and valid[1]:
-                # Post-flop: value bet with medium-strong hands
-                raw = int(pot * VALUE_RAISE_FRAC)
-                amount = max(min_raise, min(raw, max_raise))
-                action = (1, amount, 0, 0)
+            elif valid[1]:
+                vbet_threshold = VALUE_BET_EQUITY
+                if flush_danger == 2:
+                    vbet_threshold += FLUSH_DANGER_HIGH_EQUITY_BUMP
+                elif flush_danger == 1:
+                    vbet_threshold += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+                if pair_danger == 2:
+                    vbet_threshold += PAIRED_BOARD_HIGH_EQUITY_BUMP
+                elif pair_danger == 1:
+                    vbet_threshold += PAIRED_BOARD_MODERATE_EQUITY_BUMP
+                if adj_equity >= vbet_threshold:
+                    raw = int(pot * VALUE_RAISE_FRAC)
+                    amount = max(min_raise, min(raw, max_raise))
+                    action = (1, amount, 0, 0)
             elif valid[2]:
                 action = (2, 0, 0, 0)
             elif valid[3]:
@@ -586,9 +719,28 @@ def decide_action(
         marginal_floor = TURN_MIN_EQUITY_CALL
     else:
         marginal_floor = MIN_EQUITY_TO_CALL_MARGINAL
-    # River facing big bet: extra margin
-    if street == 3 and continue_cost > 0 and pot > 0 and continue_cost / pot >= 0.50:
-        marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
+    # Facing a big bet: extra margin
+    if continue_cost > 0 and pot > 0:
+        m_bet_frac = continue_cost / pot
+        if street == 3 and m_bet_frac >= 0.50:
+            marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
+        elif street == 2 and m_bet_frac >= 0.50:
+            marginal_min_eq += TURN_BIG_BET_EXTRA_MARGIN
+    # Large pot tightening
+    if street >= 2 and pot >= LARGE_POT_THRESHOLD:
+        marginal_floor += LARGE_POT_EQUITY_BUMP
+    if street >= 2 and pot >= HUGE_POT_THRESHOLD:
+        marginal_floor += HUGE_POT_EQUITY_BUMP
+    # Flush-heavy board: demand more equity when we don't hold the flush
+    if flush_danger == 2:
+        marginal_floor += FLUSH_DANGER_HIGH_EQUITY_BUMP
+    elif flush_danger == 1:
+        marginal_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+    # Paired board: demand more equity when we don't connect with the pair
+    if pair_danger == 2:
+        marginal_floor += PAIRED_BOARD_HIGH_EQUITY_BUMP
+    elif pair_danger == 1:
+        marginal_floor += PAIRED_BOARD_MODERATE_EQUITY_BUMP
     if continue_cost > 0 and adj_equity >= marginal_min_eq and adj_equity >= marginal_floor:
         if valid[3]:
             action = (3, 0, 0, 0)
