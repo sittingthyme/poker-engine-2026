@@ -47,6 +47,28 @@ FLUSH_DANGER_MODERATE_EQUITY_BUMP = 0.04  # 3+ of one suit on board, we hold 1 o
 PAIRED_BOARD_HIGH_EQUITY_BUMP = 0.08   # board paired/trips and we don't match that rank at all
 PAIRED_BOARD_MODERATE_EQUITY_BUMP = 0.03  # board paired/trips but we match with 1 card
 
+# Post-flop commitment control: avoid escalating marginal hands in bloated pots.
+SOFT_COMMIT_BET = 40
+HIGH_COMMIT_BET = 60
+NEAR_ALLIN_BET = 80
+SOFT_COMMIT_CALL_BUMP = 0.02
+HIGH_COMMIT_CALL_BUMP = 0.05
+NEAR_ALLIN_CALL_BUMP = 0.08
+SOFT_COMMIT_POT_ODDS_BUMP = 0.01
+HIGH_COMMIT_POT_ODDS_BUMP = 0.03
+NEAR_ALLIN_POT_ODDS_BUMP = 0.05
+
+# Raise-back lockout: when facing post-flop aggression in committed pots,
+# default to call/fold and only re-raise with very premium equity.
+POSTFLOP_RAISEBACK_PREMIUM_EQUITY = 0.90
+
+# Danger compounding: when both flush and paired-board danger are present.
+COMPOUND_DANGER_TURN_BUMP = 0.05
+COMPOUND_DANGER_RIVER_BUMP = 0.08
+
+# River overcommit guard when facing a raise in large commitments.
+RIVER_OVERCOMMIT_CALL_BUMP = 0.08
+
 # Dynamic threshold adjustments
 TIGHT_OPPONENT_STRONG_ADJ = -0.05   # Lower threshold vs tight (more aggressive)
 TIGHT_OPPONENT_MEDIUM_ADJ = -0.05   # Lower threshold vs tight
@@ -435,6 +457,22 @@ def decide_action(
     # (pot_size and blind_position may be stripped by Pydantic in API mode)
     pot = observation.get("pot_size", my_bet + opp_bet)
     blind_pos = observation.get("blind_position", blind_position_from_obs(observation))
+    opp_last = (observation.get("opp_last_action") or "").upper()
+
+    # Post-flop commitment bands (relative to 100-chip per-street cap)
+    if street >= 1 and my_bet >= NEAR_ALLIN_BET:
+        commit_band = 3
+    elif street >= 1 and my_bet >= HIGH_COMMIT_BET:
+        commit_band = 2
+    elif street >= 1 and my_bet >= SOFT_COMMIT_BET:
+        commit_band = 1
+    else:
+        commit_band = 0
+
+    # Facing a post-flop raise in an already committed line:
+    # lock out re-raise wars unless we have premium equity.
+    facing_postflop_raise = street >= 1 and continue_cost > 0 and opp_last == "RAISE"
+    lockout_reraise = facing_postflop_raise and commit_band >= 1
 
     # Position: who acts LAST has position advantage.
     #   Pre-flop (street 0):  SB acts first → BB (blind_pos=1) is in position.
@@ -486,7 +524,6 @@ def decide_action(
         strong_equity = min(strong_equity, 0.68)  # value bet with 68%+ on river (two pair usually 70%+)
 
     # Opponent checked: they showed weakness – we’re more likely to have the best hand, so value bet with slightly less equity
-    opp_last = (observation.get("opp_last_action") or "").upper()
     if continue_cost == 0 and opp_last == "CHECK":
         strong_equity = max(0.50, strong_equity - OPP_CHECK_STRONG_EQUITY_DISCOUNT)
 
@@ -573,13 +610,28 @@ def decide_action(
 
     def _choose_final(heuristic_action: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         if blended_action is None:
-            return heuristic_action
-        if TABLE_MODE == "conf":
-            ev_h = _approx_ev_for_action(heuristic_action, **_ev_params())
-            ev_t = _approx_ev_for_action(blended_action, **_ev_params())
-            if ev_t < ev_h - TABLE_EV_EPSILON:
-                return heuristic_action
-        return blended_action
+            final_action = heuristic_action
+        else:
+            final_action = blended_action
+            if TABLE_MODE == "conf":
+                ev_h = _approx_ev_for_action(heuristic_action, **_ev_params())
+                ev_t = _approx_ev_for_action(blended_action, **_ev_params())
+                if ev_t < ev_h - TABLE_EV_EPSILON:
+                    final_action = heuristic_action
+
+        # Safety invariant: when continuing costs nothing, never fold by mistake.
+        # (Intentional "fold-to-win" exits occur earlier, before _choose_final.)
+        if final_action[0] == 0 and continue_cost <= 0:
+            if valid[2]:
+                return (2, 0, 0, 0)  # CHECK
+            if valid[3]:
+                return (3, 0, 0, 0)  # CALL fallback if engine marks it legal
+            if valid[1]:
+                # Last-resort legal action if check/call are unexpectedly unavailable.
+                amount = max(0, min(min_raise, max_raise))
+                if amount > 0:
+                    return (1, amount, 0, 0)  # RAISE
+        return final_action
 
     # ---- Hand-strength floor: never fold trips or better on the river ----
     if (
@@ -589,7 +641,12 @@ def decide_action(
         and continue_cost > 0
     ):
         # We have trips+.  Always at least call; raise if equity is high.
-        if adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]:
+        river_raise_floor = RERAISE_EQUITY_THRESHOLD
+        if commit_band >= 2:
+            river_raise_floor = max(river_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
+        if lockout_reraise:
+            river_raise_floor = max(river_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
+        if adj_equity >= river_raise_floor and valid[1]:
             frac = VALUE_RAISE_FRAC
             raw = int(pot * frac)
             amount = max(min_raise, min(raw, max_raise))
@@ -601,7 +658,10 @@ def decide_action(
 
     # 1. STRONG HAND: value bet / raise (high bar in short deck)
     if adj_equity >= strong_equity:
-        if valid[1]:  # RAISE
+        can_strong_raise = valid[1]
+        if lockout_reraise and adj_equity < POSTFLOP_RAISEBACK_PREMIUM_EQUITY:
+            can_strong_raise = False
+        if can_strong_raise:  # RAISE
             if street == 0:
                 # Preflop: use BB-based sizing instead of pot-fraction
                 if continue_cost <= 0 or my_bet <= 2:
@@ -640,6 +700,16 @@ def decide_action(
             min_equity_to_call += RIVER_BIG_BET_EXTRA_MARGIN
         elif street == 2 and bet_frac >= 0.50:
             min_equity_to_call += TURN_BIG_BET_EXTRA_MARGIN
+    # Commitment tightening: as invested chips rise, avoid thin continues.
+    if commit_band == 1:
+        call_floor += SOFT_COMMIT_CALL_BUMP
+        min_equity_to_call += SOFT_COMMIT_POT_ODDS_BUMP
+    elif commit_band == 2:
+        call_floor += HIGH_COMMIT_CALL_BUMP
+        min_equity_to_call += HIGH_COMMIT_POT_ODDS_BUMP
+    elif commit_band >= 3:
+        call_floor += NEAR_ALLIN_CALL_BUMP
+        min_equity_to_call += NEAR_ALLIN_POT_ODDS_BUMP
     # Large pot tightening: multi-street aggression makes marginal hands worse
     if street >= 2 and pot >= LARGE_POT_THRESHOLD:
         call_floor += LARGE_POT_EQUITY_BUMP
@@ -655,6 +725,15 @@ def decide_action(
         call_floor += PAIRED_BOARD_HIGH_EQUITY_BUMP
     elif pair_danger == 1:
         call_floor += PAIRED_BOARD_MODERATE_EQUITY_BUMP
+    # Compound board danger in committed pots (flush + paired board together).
+    if flush_danger >= 1 and pair_danger >= 1 and street >= 2 and commit_band >= 1:
+        if street == 3:
+            call_floor += COMPOUND_DANGER_RIVER_BUMP
+        else:
+            call_floor += COMPOUND_DANGER_TURN_BUMP
+    # River overcommit guard: when already deep and facing aggression, demand more.
+    if street == 3 and continue_cost > 0 and commit_band >= 2:
+        min_equity_to_call += RIVER_OVERCOMMIT_CALL_BUMP
 
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
@@ -664,6 +743,10 @@ def decide_action(
             # vs real raises, just call — pot control.
             can_reraise = adj_equity >= RERAISE_EQUITY_THRESHOLD and valid[1]
             if street == 0 and opp_bet > 2:
+                can_reraise = False
+            if street >= 1 and commit_band >= 1:
+                can_reraise = False
+            if lockout_reraise and adj_equity < POSTFLOP_RAISEBACK_PREMIUM_EQUITY:
                 can_reraise = False
             if can_reraise:
                 if street == 0:
@@ -690,6 +773,17 @@ def decide_action(
                     vbet_threshold += PAIRED_BOARD_HIGH_EQUITY_BUMP
                 elif pair_danger == 1:
                     vbet_threshold += PAIRED_BOARD_MODERATE_EQUITY_BUMP
+                if flush_danger >= 1 and pair_danger >= 1 and street >= 2 and commit_band >= 1:
+                    if street == 3:
+                        vbet_threshold += COMPOUND_DANGER_RIVER_BUMP
+                    else:
+                        vbet_threshold += COMPOUND_DANGER_TURN_BUMP
+                if commit_band == 1:
+                    vbet_threshold += SOFT_COMMIT_CALL_BUMP
+                elif commit_band == 2:
+                    vbet_threshold += HIGH_COMMIT_CALL_BUMP
+                elif commit_band >= 3:
+                    vbet_threshold += NEAR_ALLIN_CALL_BUMP
                 if adj_equity >= vbet_threshold:
                     raw = int(pot * VALUE_RAISE_FRAC)
                     amount = max(min_raise, min(raw, max_raise))
@@ -726,6 +820,16 @@ def decide_action(
             marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
         elif street == 2 and m_bet_frac >= 0.50:
             marginal_min_eq += TURN_BIG_BET_EXTRA_MARGIN
+    # Commitment tightening: avoid thin calls when heavily invested.
+    if commit_band == 1:
+        marginal_floor += SOFT_COMMIT_CALL_BUMP
+        marginal_min_eq += SOFT_COMMIT_POT_ODDS_BUMP
+    elif commit_band == 2:
+        marginal_floor += HIGH_COMMIT_CALL_BUMP
+        marginal_min_eq += HIGH_COMMIT_POT_ODDS_BUMP
+    elif commit_band >= 3:
+        marginal_floor += NEAR_ALLIN_CALL_BUMP
+        marginal_min_eq += NEAR_ALLIN_POT_ODDS_BUMP
     # Large pot tightening
     if street >= 2 and pot >= LARGE_POT_THRESHOLD:
         marginal_floor += LARGE_POT_EQUITY_BUMP
@@ -741,6 +845,13 @@ def decide_action(
         marginal_floor += PAIRED_BOARD_HIGH_EQUITY_BUMP
     elif pair_danger == 1:
         marginal_floor += PAIRED_BOARD_MODERATE_EQUITY_BUMP
+    if flush_danger >= 1 and pair_danger >= 1 and street >= 2 and commit_band >= 1:
+        if street == 3:
+            marginal_floor += COMPOUND_DANGER_RIVER_BUMP
+        else:
+            marginal_floor += COMPOUND_DANGER_TURN_BUMP
+    if street == 3 and continue_cost > 0 and commit_band >= 2:
+        marginal_min_eq += RIVER_OVERCOMMIT_CALL_BUMP
     if continue_cost > 0 and adj_equity >= marginal_min_eq and adj_equity >= marginal_floor:
         if valid[3]:
             action = (3, 0, 0, 0)
@@ -757,7 +868,8 @@ def decide_action(
         bluff_freq = _bluff_frequency(opp_fold_rate)
         if (valid[1] and adj_equity < bluff_equity_ceil
                 and random.random() < bluff_freq
-                and opp_fold_rate > 0.50):
+                and opp_fold_rate > 0.50
+                and commit_band == 0):
             raw = int(pot * BLUFF_RAISE_FRAC)
             amount = max(min_raise, min(raw, max_raise))
             action = (1, amount, 0, 0)
@@ -766,7 +878,7 @@ def decide_action(
         return _choose_final(action)
 
     # 4. WEAK HAND facing a bet: bluff-raise very selectively, else fold
-    if valid[1] and adj_equity < bluff_equity_ceil:
+    if valid[1] and adj_equity < bluff_equity_ceil and commit_band == 0:
         bluff_freq = _bluff_frequency(opp_fold_rate)
         if random.random() < bluff_freq and opp_fold_rate > 0.55:
             raw = int(pot * BLUFF_RAISE_FRAC)
