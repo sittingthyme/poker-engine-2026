@@ -30,6 +30,13 @@ class PlayerAgent(Agent):
         self._my_cumulative_reward: float = 0.0
         self._hands_played: int = 0
         self._last_cards_hash: int = 0  # detect new hand by card change
+        self._hand_start_bankroll: float = 0.0
+        self._recent_hand_deltas: list[float] = []
+        self._my_raises_by_street: dict[int, int] = {}
+        self._my_raises_this_hand: int = 0
+        self._opp_postflop_raise_events: list[int] = []
+        self._opp_postflop_reraise_events: list[int] = []
+        self._opp_high_commit_pressure_events: list[int] = []
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -56,8 +63,18 @@ class PlayerAgent(Agent):
 
         # Detect new hand → reset per-hand state & tell opponent model
         if hand_num != self._current_hand:
+            # Finalize previous hand delta for lightweight match-state adaptation.
+            if self._current_hand is not None:
+                hand_delta = self._my_cumulative_reward - self._hand_start_bankroll
+                self._recent_hand_deltas.append(hand_delta)
+                if len(self._recent_hand_deltas) > 40:
+                    self._recent_hand_deltas = self._recent_hand_deltas[-40:]
+
             self._current_hand = hand_num
             self._my_discarded = []
+            self._my_raises_by_street = {}
+            self._my_raises_this_hand = 0
+            self._hand_start_bankroll = self._my_cumulative_reward
             self.opp_model.new_hand()
             # Detect blind position from the first observation of the hand.
             # Street 0 start: SB posts 1, BB posts 2.
@@ -102,6 +119,22 @@ class PlayerAgent(Agent):
             raise_amt = max(0, observation.get("opp_bet", 0) - observation.get("my_bet", 0))
             pot_size = observation.get("pot_size", observation.get("my_bet", 0) + observation.get("opp_bet", 0))
             self.opp_model.record_action(street, opp_action_name, raise_amount=raise_amt, pot_size=pot_size)
+            if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
+                self._opp_postflop_raise_events.append(1 if opp_action_name == "RAISE" else 0)
+                if len(self._opp_postflop_raise_events) > 120:
+                    self._opp_postflop_raise_events = self._opp_postflop_raise_events[-120:]
+            if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
+                is_reraise = opp_action_name == "RAISE" and observation.get("my_bet", 0) > 0
+                self._opp_postflop_reraise_events.append(1 if is_reraise else 0)
+                if len(self._opp_postflop_reraise_events) > 120:
+                    self._opp_postflop_reraise_events = self._opp_postflop_reraise_events[-120:]
+                high_commit_pressure = (
+                    opp_action_name == "RAISE"
+                    and max(observation.get("my_bet", 0), observation.get("opp_bet", 0)) >= 50
+                )
+                self._opp_high_commit_pressure_events.append(1 if high_commit_pressure else 0)
+                if len(self._opp_high_commit_pressure_events) > 120:
+                    self._opp_high_commit_pressure_events = self._opp_high_commit_pressure_events[-120:]
 
         if terminated:
             self.opp_model.end_hand()
@@ -169,6 +202,27 @@ class PlayerAgent(Agent):
                 info["bankroll_1"] = self._my_cumulative_reward
         if info.get("hand_number") is None and hand_num is not None:
             info["hand_number"] = hand_num
+        if self._recent_hand_deltas:
+            info["recent_delta_10"] = float(sum(self._recent_hand_deltas[-10:]))
+            info["recent_delta_30"] = float(sum(self._recent_hand_deltas[-30:]))
+        else:
+            info["recent_delta_10"] = 0.0
+            info["recent_delta_30"] = 0.0
+        if self._opp_postflop_raise_events:
+            window = self._opp_postflop_raise_events[-24:]
+            info["opp_postflop_raise_density"] = float(sum(window) / len(window))
+        else:
+            info["opp_postflop_raise_density"] = 0.0
+        if self._opp_postflop_reraise_events:
+            rw = self._opp_postflop_reraise_events[-24:]
+            info["opp_postflop_reraise_density"] = float(sum(rw) / len(rw))
+        else:
+            info["opp_postflop_reraise_density"] = 0.0
+        if self._opp_high_commit_pressure_events:
+            hw = self._opp_high_commit_pressure_events[-24:]
+            info["opp_high_commit_pressure_density"] = float(sum(hw) / len(hw))
+        else:
+            info["opp_high_commit_pressure_density"] = 0.0
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
         opp_disc = [c for c in obs.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
@@ -229,7 +283,12 @@ class PlayerAgent(Agent):
         if street == 3 and len(my_cards) >= 2 and len(community) == 5:
             hand_rank_class = get_hand_rank_class(my_cards, community)
 
+        info["my_raises_this_street"] = int(self._my_raises_by_street.get(street, 0))
+        info["my_raises_this_hand"] = int(self._my_raises_this_hand)
         action = decide_action(equity, obs, self.opp_model, info=info or {}, hand_rank_class=hand_rank_class)
+        if action[0] == self.action_types.RAISE.value:
+            self._my_raises_by_street[street] = self._my_raises_by_street.get(street, 0) + 1
+            self._my_raises_this_hand += 1
 
         # Log time usage for monitoring
         if time_ratio < 0.50:
