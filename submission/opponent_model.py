@@ -110,10 +110,6 @@ class OpponentModel:
         self._discard_quality_sum: float = 0.0
         self._discard_count: int = 0
 
-        # Per-hand summaries for rolling-window phase detection
-        self._hand_summaries: list[dict] = []
-        self._current_hand_summary: dict = {}
-
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
@@ -122,13 +118,6 @@ class OpponentModel:
         """Call at the start of every new hand."""
         self._hands_seen += 1
         self._current_hand_vpip = False
-        self._current_hand_summary = {
-            "vpip": False,
-            "preflop_fold": False,
-            "postflop_raise_count": 0,
-            "postflop_action_count": 0,
-            "big_bet_made": False,
-        }
 
     def record_action(
         self,
@@ -171,8 +160,6 @@ class OpponentModel:
             self.overall.folds += 1
             if pot_size > 0:
                 pot_bucket.folds += 1
-            if street == 0 and self._current_hand_summary:
-                self._current_hand_summary["preflop_fold"] = True
         elif action_name == "RAISE":
             bucket.raises += 1
             bucket.total_raise_amount += raise_amount
@@ -196,8 +183,6 @@ class OpponentModel:
             
             if street == 0:
                 self._current_hand_vpip = True
-                if self._current_hand_summary:
-                    self._current_hand_summary["vpip"] = True
         elif action_name == "CALL":
             bucket.calls += 1
             self.overall.calls += 1
@@ -205,21 +190,11 @@ class OpponentModel:
                 pot_bucket.calls += 1
             if street == 0:
                 self._current_hand_vpip = True
-                if self._current_hand_summary:
-                    self._current_hand_summary["vpip"] = True
         elif action_name == "CHECK":
             bucket.checks += 1
             self.overall.checks += 1
             if pot_size > 0:
                 pot_bucket.checks += 1
-
-        # Track postflop actions for phase detection
-        if street >= 1 and self._current_hand_summary:
-            self._current_hand_summary["postflop_action_count"] += 1
-            if action_name == "RAISE":
-                self._current_hand_summary["postflop_raise_count"] += 1
-                if raise_amount >= 30:
-                    self._current_hand_summary["big_bet_made"] = True
         
         # Update recent trends after recording action
         if bucket.actions > 0:
@@ -255,10 +230,6 @@ class OpponentModel:
         """Call at the end of every hand to finalize VPIP."""
         if self._current_hand_vpip:
             self._vpip_count += 1
-        if self._current_hand_summary:
-            self._hand_summaries.append(self._current_hand_summary)
-            if len(self._hand_summaries) > 100:
-                self._hand_summaries = self._hand_summaries[-100:]
 
     # ------------------------------------------------------------------
     # Queries
@@ -334,63 +305,17 @@ class OpponentModel:
         return "unknown"
 
     def is_tight(self) -> bool:
-        """Classify opponent as tight (low VPIP, high postflop fold rate)."""
+        """Classify opponent as tight (low VPIP, high fold rate)."""
         if self._hands_seen < 12:
-            return False
-        postflop_actions = sum(self.streets[s].actions for s in range(1, 4))
-        postflop_folds = sum(self.streets[s].folds for s in range(1, 4))
-        postflop_fold_rate = postflop_folds / postflop_actions if postflop_actions > 5 else self.overall.fold_rate
-        return self.vpip < 0.40 and postflop_fold_rate > 0.45
-
-    def is_loose(self) -> bool:
-        """Classify opponent as loose (high VPIP, low postflop fold rate)."""
-        if self._hands_seen < 12:
-            return False
-        postflop_actions = sum(self.streets[s].actions for s in range(1, 4))
-        postflop_folds = sum(self.streets[s].folds for s in range(1, 4))
-        postflop_fold_rate = postflop_folds / postflop_actions if postflop_actions > 5 else self.overall.fold_rate
-        return self.vpip > 0.60 and postflop_fold_rate < 0.30
+            return False  # Not enough data
+        return self.vpip < 0.40 and self.overall.fold_rate > 0.50
     
-    def recent_preflop_fold_rate(self, window: int = 50) -> float:
-        """Preflop fold rate over the last N hands (rolling window)."""
-        recent = self._hand_summaries[-window:]
-        if not recent:
-            return 0.3
-        return sum(1 for h in recent if h.get("preflop_fold")) / len(recent)
-
-    def recent_vpip_rate(self, window: int = 50) -> float:
-        """VPIP over the last N hands (rolling window)."""
-        recent = self._hand_summaries[-window:]
-        if not recent:
-            return 0.5
-        return sum(1 for h in recent if h.get("vpip")) / len(recent)
-
-    def opponent_phase(self) -> str:
-        """
-        Detect opponent's current strategic phase from recent behavior.
-
-        Returns:
-            'aggressive' — high VPIP, frequent postflop raises
-            'passive'    — very high preflop fold rate (likely fold-to-win)
-            'balanced'   — moderate stats or insufficient data
-        """
-        recent = self._hand_summaries[-50:]
-        if len(recent) < 15:
-            return "balanced"
-        vpip = sum(1 for h in recent if h.get("vpip")) / len(recent)
-        pf_fold = sum(1 for h in recent if h.get("preflop_fold")) / len(recent)
-        pf_raises = sum(h.get("postflop_raise_count", 0) for h in recent)
-        pf_actions = sum(h.get("postflop_action_count", 0) for h in recent)
-        pf_raise_rate = pf_raises / pf_actions if pf_actions > 0 else 0.0
-        big_bets = sum(1 for h in recent if h.get("big_bet_made"))
-        big_bet_rate = big_bets / len(recent)
-
-        if pf_fold > 0.70:
-            return "passive"
-        if vpip > 0.55 and (pf_raise_rate > 0.25 or big_bet_rate > 0.15):
-            return "aggressive"
-        return "balanced"
-
+    def is_loose(self) -> bool:
+        """Classify opponent as loose (high VPIP, low fold rate)."""
+        if self._hands_seen < 12:
+            return False  # Not enough data
+        return self.vpip > 0.60 and self.overall.fold_rate < 0.40
+    
     def bet_sizing_tendency(self, street: int | None = None) -> str:
         """
         Classify opponent's bet sizing tendency.

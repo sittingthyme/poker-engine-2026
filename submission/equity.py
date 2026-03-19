@@ -61,48 +61,6 @@ def get_hand_rank_class(hole_cards: list[int], community_cards: list[int]) -> in
     return _evaluator.get_rank_class(rank)
 
 
-def count_dominating_hands(
-    hole_cards: list[int],
-    community_cards: list[int],
-    opp_discarded: list[int] | None = None,
-    my_discarded: list[int] | None = None,
-) -> float:
-    """
-    Count the fraction of possible 2-card opponent hands that beat ours.
-
-    Uses exact enumeration over all remaining 2-card combos to determine
-    how dominated our current hand is.  Returns a float in [0, 1] where
-    higher = more dominated.
-    """
-    board = [c for c in community_cards if c != -1]
-    if len(board) < 5 or len(hole_cards) < 2:
-        return 0.0
-
-    hand_treys = [int_to_treys(c) for c in hole_cards[:2]]
-    board_treys = [int_to_treys(c) for c in board]
-    my_rank = evaluate_hand(hand_treys, board_treys)
-
-    known = set(hole_cards[:2]) | set(board) | set(opp_discarded or []) | set(my_discarded or [])
-    known.discard(-1)
-    remaining = [c for c in range(DECK_SIZE) if c not in known]
-
-    n = len(remaining)
-    if n < 2:
-        return 0.0
-
-    beats_us = 0
-    total = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            opp_hand = [int_to_treys(remaining[i]), int_to_treys(remaining[j])]
-            opp_rank = evaluate_hand(opp_hand, board_treys)
-            total += 1
-            if opp_rank < my_rank:
-                beats_us += 1
-
-    return beats_us / total if total > 0 else 0.0
-
-
 def get_hand_rank_class_partial(hole_cards: list[int], community_cards: list[int]) -> int | None:
     """
     Like get_hand_rank_class but works with 3-5 community cards.
@@ -416,11 +374,6 @@ def _keep_rank_key(keep: list[int]) -> tuple[int, int]:
 # whose wins come more often from flushes or better (nut potential).
 NUT_FRAC_BONUS = 0.04  # effective equity bonus per 100% nut fraction
 
-# Discard mixing: when top keeps are within this score margin, randomly
-# select among them weighted by score to reduce predictability.
-DISCARD_MIX_MARGIN = 0.02   # keeps within 2% composite score are candidates (tighter)
-DISCARD_MIX_TEMPERATURE = 8.0  # higher = more weight to the best keep
-
 def best_discard(
     hole_cards: list[int],
     community_cards: list[int],
@@ -431,13 +384,15 @@ def best_discard(
     Evaluate all C(5,2)=10 ways to keep 2 of 5 hole cards.
 
     Selection uses a composite score: raw equity plus a small bonus for
-    nut potential (fraction of wins from flush or better).  When multiple
-    keeps have near-equal scores, randomly select among them weighted by
-    score to reduce predictability (opponents see our discards).
+    nut potential (fraction of wins from flush or better).  This favors
+    keeps that win big pots rather than keeps that win marginally.
 
     Returns (keep_idx_1, keep_idx_2, best_equity).
     """
-    candidates: list[tuple[int, int, float, float, tuple[int, int]]] = []
+    best_i, best_j = 0, 1
+    best_score = -1.0
+    best_eq = -1.0
+    best_rank_key = (-1, -1)
 
     for i in range(5):
         for j in range(i + 1, 5):
@@ -453,50 +408,16 @@ def best_discard(
             )
             score = eq + NUT_FRAC_BONUS * nut_frac
             rank_key = _keep_rank_key(keep)
-            candidates.append((i, j, eq, score, rank_key))
 
-    if not candidates:
-        return 0, 1, 0.0
+            if score > best_score + 0.01:
+                best_score = score
+                best_eq = eq
+                best_i, best_j = i, j
+                best_rank_key = rank_key
+            elif abs(score - best_score) <= 0.01 and rank_key > best_rank_key:
+                best_score = score
+                best_eq = eq
+                best_i, best_j = i, j
+                best_rank_key = rank_key
 
-    best_score = max(c[3] for c in candidates)
-
-    # Find the deterministic best (highest score, tie-break by rank key)
-    det_best = max(candidates, key=lambda c: (c[3], c[4]))
-
-    # Safety: if the best keep is a pocket pair or has an Ace, don't mix it away
-    det_keep = [hole_cards[det_best[0]], hole_cards[det_best[1]]]
-    det_is_pair = (_rank_index(det_keep[0]) == _rank_index(det_keep[1]))
-    det_has_ace = any(_rank_index(c) == 8 for c in det_keep)
-
-    if det_is_pair or det_has_ace:
-        return det_best[0], det_best[1], det_best[2]
-
-    # Safety: if any candidate is a pocket pair and scores within 0.05 of best,
-    # always prefer the pair (Monte Carlo noise can mask its true value).
-    PAIR_PROTECTION_MARGIN = 0.05
-    for i, j, eq, sc, rk in candidates:
-        keep = [hole_cards[i], hole_cards[j]]
-        if _rank_index(keep[0]) == _rank_index(keep[1]) and sc >= best_score - PAIR_PROTECTION_MARGIN:
-            return i, j, eq
-
-    # Gather keeps within the mix margin of the best
-    finalists = [(i, j, eq, sc, rk) for i, j, eq, sc, rk in candidates
-                 if sc >= best_score - DISCARD_MIX_MARGIN]
-
-    if len(finalists) == 1:
-        f = finalists[0]
-        return f[0], f[1], f[2]
-
-    # Weighted random selection among finalists
-    import math
-    weights = [math.exp(DISCARD_MIX_TEMPERATURE * (sc - best_score)) for _, _, _, sc, _ in finalists]
-    total_w = sum(weights)
-    r = random.random() * total_w
-    cumul = 0.0
-    for idx, (i, j, eq, sc, rk) in enumerate(finalists):
-        cumul += weights[idx]
-        if r <= cumul:
-            return i, j, eq
-
-    f = finalists[-1]
-    return f[0], f[1], f[2]
+    return best_i, best_j, best_eq

@@ -9,7 +9,7 @@ inside the submission/ package.
 from agents.agent import Agent
 from gym_env import PokerEnv
 
-from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class, get_hand_rank_class_partial, count_dominating_hands
+from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class, get_hand_rank_class_partial
 from submission.opponent_model import OpponentModel
 from submission.strategy import decide_action
 
@@ -223,8 +223,6 @@ class PlayerAgent(Agent):
             info["opp_high_commit_pressure_density"] = float(sum(hw) / len(hw))
         else:
             info["opp_high_commit_pressure_density"] = 0.0
-        info["opp_phase"] = self.opp_model.opponent_phase()
-        info["opp_recent_preflop_fold_rate"] = self.opp_model.recent_preflop_fold_rate()
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
         opp_disc = [c for c in obs.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
@@ -287,17 +285,6 @@ class PlayerAgent(Agent):
                 hand_rank_class = get_hand_rank_class(my_cards, community)
             else:
                 hand_rank_class = get_hand_rank_class_partial(my_cards, community)
-
-        # Domination awareness: on river, compute fraction of hands that beat us
-        domination_frac = 0.0
-        continue_cost = obs.get("opp_bet", 0) - obs.get("my_bet", 0)
-        if street >= 3 and len(community) == 5 and continue_cost >= 10:
-            domination_frac = count_dominating_hands(
-                my_cards[:2], community,
-                opp_discarded=opp_disc if opp_disc else None,
-                my_discarded=self._my_discarded if self._my_discarded else None,
-            )
-        info["domination_frac"] = domination_frac
 
         info["my_raises_this_street"] = int(self._my_raises_by_street.get(street, 0))
         info["my_raises_this_hand"] = int(self._my_raises_this_hand)
