@@ -141,8 +141,22 @@ PREFLOP_OPEN_RAISE_MULTIPLIER = 3.5  # raise to 3.5x BB = 7 chips (top bots use 
 PREFLOP_3BET_MULTIPLIER = 2.5        # 3-bet to 2.5x the incoming raise (down from 3.0)
 
 # Facing a 3-bet: tighter ranges to avoid bloated pots with marginal hands
-PREFLOP_3BET_CALL_MIN_EQUITY = 0.62  # need 62%+ equity to call a 3-bet
+PREFLOP_3BET_CALL_MIN_EQUITY = 0.55  # need 62%+ equity to call a 3-bet
 PREFLOP_4BET_MIN_EQUITY = 0.80       # need 80%+ equity to 4-bet (very premium only)
+
+# Raise-size equity penalty: large raises imply stronger opponent ranges.
+PREFLOP_BIG_RAISE_THRESHOLD = 6      # start adjusting above any real raise
+PREFLOP_BIG_RAISE_MAX_PENALTY = 0.12 # max equity discount at all-in
+# Steeper curve so opp_bet=14 gets ~3.2%, opp_bet=21 gets ~6%
+PREFLOP_RAISE_PENALTY_PER_CHIP = 0.004  # penalty = min(max, this * (opp_bet - threshold))
+
+# Extra penalty when BB facing a large SB open-raise (we didn't raise, they did).
+PREFLOP_BB_OPEN_RAISE_THRESHOLD = 10  # opp_bet >= this
+PREFLOP_BB_OPEN_RAISE_PENALTY = 0.03
+
+# Extra penalty when facing all-in (avoids calling with 54s etc. due to variance).
+PREFLOP_ALLIN_THRESHOLD = 80         # opp_bet >= this = near all-in
+PREFLOP_ALLIN_EQUITY_PENALTY = 0.05  # extra 5% discount when facing all-in
 
 # Re-raise threshold: when facing a bet, re-raise for value if equity >= this
 RERAISE_EQUITY_THRESHOLD = 0.78
@@ -175,6 +189,11 @@ MAX_CALL_FLOOR_BUMP = 0.15
 # if we have ANY reasonable hand. Prevents invest-then-fold for trivial amounts.
 TINY_BET_POT_FRAC = 0.15       # bet < 15% of pot = trivially small
 TINY_BET_MAX_EQUITY_REQ = 0.35  # need only 35% equity to call a tiny bet
+
+# Pot-odds override: on flop/turn, call when equity beats pot odds even if
+# below the 55% marginal floor (fixes folding pair+draw, flush draws with good odds).
+POT_ODDS_OVERRIDE_MARGIN = 0.05   # equity must be at least pot_odds + this
+POT_ODDS_OVERRIDE_MIN_EQUITY = 0.35  # don't call with very weak hands
 
 # Nut-awareness: in this 27-card 3-suit deck, flushes/full houses are common.
 # Suppress raising with non-nut hands on dangerous boards.
@@ -532,6 +551,35 @@ def _opp_flush_signal(observation: dict) -> int:
     return 0
 
 
+def _is_overpair_on_weak_board(observation: dict, hand_rank_class: int | None) -> bool:
+    """
+    Return True if we have an overpair (pair higher than all board cards)
+    on a weak board (no flush draw, no paired board).
+
+    Overpairs on weak boards are strong and should not be folded to normal bets.
+    """
+    if hand_rank_class is None or hand_rank_class != 8:
+        return False
+
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    my_cards = [c for c in observation.get("my_cards", []) if c != -1][:2]
+    if len(community) < 3 or len(my_cards) < 2:
+        return False
+
+    pair_rank = my_cards[0] % 9
+    if my_cards[1] % 9 != pair_rank:
+        return False  # not a pair
+
+    board_ranks = {c % 9 for c in community}
+    if pair_rank <= max(board_ranks):
+        return False  # not an overpair
+
+    if _flush_danger(observation) != 0 or _paired_board_danger(observation) != 0:
+        return False  # board not weak
+
+    return True
+
+
 def _is_non_nut_flush(observation: dict, hand_rank_class: int | None) -> bool:
     """
     Return True if we have a flush (rank_class==4) but our highest card
@@ -687,6 +735,24 @@ def decide_action(
     # Cost to continue (computed early for preflop cap check)
     continue_cost = opp_bet - my_bet
 
+    # Preflop equity penalties: raises imply stronger ranges than random.
+    if street == 0 and continue_cost > 0 and opp_bet >= PREFLOP_BIG_RAISE_THRESHOLD:
+        size_penalty = min(
+            PREFLOP_BIG_RAISE_MAX_PENALTY,
+            PREFLOP_RAISE_PENALTY_PER_CHIP * (opp_bet - PREFLOP_BIG_RAISE_THRESHOLD),
+        )
+        equity -= size_penalty
+        # Extra penalty when BB facing a large SB open-raise (we didn't raise).
+        blind_pos = observation.get("blind_position", blind_position_from_obs(observation))
+        if (
+            blind_pos == 1
+            and my_raises_this_hand == 0
+            and opp_bet >= PREFLOP_BB_OPEN_RAISE_THRESHOLD
+        ):
+            equity -= PREFLOP_BB_OPEN_RAISE_PENALTY
+        if opp_bet >= PREFLOP_ALLIN_THRESHOLD:
+            equity -= PREFLOP_ALLIN_EQUITY_PENALTY
+
     # Preflop escalation cap: stop re-raising when already committed heavily
     # unless we have premium equity.  Just call to see a flop.
     if street == 0 and continue_cost > 0 and my_bet >= PREFLOP_RERAISE_CAP and equity < PREFLOP_PREMIUM_EQUITY:
@@ -778,7 +844,12 @@ def decide_action(
     # Adjust equity for position
     adj_equity = equity + (IP_EQUITY_BONUS if in_position else 0.0)
 
-    pot_odds = continue_cost / (continue_cost + pot) if continue_cost > 0 else 0.0
+    # Break-even equity: EV = 0 when equity = continue_cost / (pot + 2*continue_cost)
+    pot_odds = (
+        continue_cost / (pot + 2 * continue_cost)
+        if continue_cost > 0 and (pot + 2 * continue_cost) > 0
+        else 0.0
+    )
 
     # Opponent adaptation
     adapted = opp_model.hands_seen >= MIN_HANDS_FOR_ADAPT
@@ -1004,6 +1075,23 @@ def decide_action(
         if early_phase:
             trips_raise_floor = max(trips_raise_floor, EARLY_RERAISE_PREMIUM_EQUITY)
         if adj_equity >= trips_raise_floor and valid[1]:
+            frac = VALUE_RAISE_FRAC
+            raw = int(pot * frac)
+            amount = max(min_raise, min(raw, max_raise))
+            return (1, amount, 0, 0)
+        if valid[3]:
+            return (3, 0, 0, 0)
+
+    # ---- Overpair on weak board: protect (never fold to normal bets) ----
+    if (
+        street >= 1
+        and hand_rank_class is not None
+        and _is_overpair_on_weak_board(observation, hand_rank_class)
+        and continue_cost > 0
+    ):
+        # At least call; raise if equity supports it.
+        overpair_raise_floor = RERAISE_EQUITY_THRESHOLD
+        if adj_equity >= overpair_raise_floor and valid[1]:
             frac = VALUE_RAISE_FRAC
             raw = int(pot * frac)
             amount = max(min_raise, min(raw, max_raise))
@@ -1486,6 +1574,17 @@ def decide_action(
         if m_bet_frac_vs_pot < TINY_BET_POT_FRAC:
             marginal_floor = min(marginal_floor, TINY_BET_MAX_EQUITY_REQ)
             marginal_min_eq = min(marginal_min_eq, TINY_BET_MAX_EQUITY_REQ)
+
+    # --- Pot-odds override: call when equity beats pot odds even if below floor ---
+    # if (
+    #     continue_cost > 0
+    #     and pot > 0
+    #     and street <= 2
+    #     and adj_equity >= pot_odds + POT_ODDS_OVERRIDE_MARGIN
+    #     and adj_equity >= POT_ODDS_OVERRIDE_MIN_EQUITY
+    #     and valid[3]
+    # ):
+    #     return _choose_final((3, 0, 0, 0))
 
     if continue_cost > 0 and adj_equity >= marginal_min_eq and adj_equity >= marginal_floor:
         if valid[3]:
