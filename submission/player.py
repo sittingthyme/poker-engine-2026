@@ -9,7 +9,7 @@ inside the submission/ package.
 from agents.agent import Agent
 from gym_env import PokerEnv
 
-from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class
+from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class, get_hand_rank_class_partial, count_dominating_hands
 from submission.opponent_model import OpponentModel
 from submission.strategy import decide_action
 
@@ -157,7 +157,7 @@ class PlayerAgent(Agent):
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
         # Base discard simulations (evaluating 10 pairs, so each pair gets sims_per_pair)
-        base_sims = 550  # Phase 2: increased for 27-card deck straight-draw accuracy
+        base_sims = 800  # Equity-first selection: higher sims for reliable equity ranking
 
         # Apply time scaling
         if time_ratio < 0.30:
@@ -278,10 +278,24 @@ class PlayerAgent(Agent):
                 num_simulations=n_sims,
             )
 
-        # On the river, evaluate actual hand strength so we never fold trips+
+        # Post-flop: evaluate hand strength so we never fold trips+
         hand_rank_class = None
-        if street == 3 and len(my_cards) >= 2 and len(community) == 5:
-            hand_rank_class = get_hand_rank_class(my_cards, community)
+        if street >= 1 and len(my_cards) >= 2 and len(community) >= 3:
+            if len(community) == 5:
+                hand_rank_class = get_hand_rank_class(my_cards, community)
+            else:
+                hand_rank_class = get_hand_rank_class_partial(my_cards, community)
+
+        # Domination awareness: on river, compute fraction of hands that beat us
+        domination_frac = 0.0
+        continue_cost = obs.get("opp_bet", 0) - obs.get("my_bet", 0)
+        if street >= 3 and len(community) == 5 and continue_cost >= 10:
+            domination_frac = count_dominating_hands(
+                my_cards[:2], community,
+                opp_discarded=opp_disc if opp_disc else None,
+                my_discarded=self._my_discarded if self._my_discarded else None,
+            )
+        info["domination_frac"] = domination_frac
 
         info["my_raises_this_street"] = int(self._my_raises_by_street.get(street, 0))
         info["my_raises_this_hand"] = int(self._my_raises_this_hand)

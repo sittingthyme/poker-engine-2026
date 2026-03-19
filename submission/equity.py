@@ -61,6 +61,87 @@ def get_hand_rank_class(hole_cards: list[int], community_cards: list[int]) -> in
     return _evaluator.get_rank_class(rank)
 
 
+def count_dominating_hands(
+    hole_cards: list[int],
+    community_cards: list[int],
+    opp_discarded: list[int] | None = None,
+    my_discarded: list[int] | None = None,
+) -> float:
+    """
+    Count the fraction of possible 2-card opponent hands that beat ours.
+
+    Uses exact enumeration over all remaining 2-card combos to determine
+    how dominated our current hand is.  Returns a float in [0, 1] where
+    higher = more dominated.
+    """
+    board = [c for c in community_cards if c != -1]
+    if len(board) < 5 or len(hole_cards) < 2:
+        return 0.0
+
+    hand_treys = [int_to_treys(c) for c in hole_cards[:2]]
+    board_treys = [int_to_treys(c) for c in board]
+    my_rank = evaluate_hand(hand_treys, board_treys)
+
+    known = set(hole_cards[:2]) | set(board) | set(opp_discarded or []) | set(my_discarded or [])
+    known.discard(-1)
+    remaining = [c for c in range(DECK_SIZE) if c not in known]
+
+    n = len(remaining)
+    if n < 2:
+        return 0.0
+
+    beats_us = 0
+    total = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            opp_hand = [int_to_treys(remaining[i]), int_to_treys(remaining[j])]
+            opp_rank = evaluate_hand(opp_hand, board_treys)
+            total += 1
+            if opp_rank < my_rank:
+                beats_us += 1
+
+    return beats_us / total if total > 0 else 0.0
+
+
+def get_hand_rank_class_partial(hole_cards: list[int], community_cards: list[int]) -> int | None:
+    """
+    Like get_hand_rank_class but works with 3-5 community cards.
+
+    For fewer than 5 community cards, pads with random remaining cards
+    and returns a conservative (pessimistic) rank class using simple
+    rank counting rather than treys evaluation.
+
+    Returns None if insufficient cards.
+    """
+    board = [c for c in community_cards if c != -1]
+    if len(hole_cards) < 2 or len(board) < 3:
+        return None
+
+    if len(board) == 5:
+        return get_hand_rank_class(hole_cards, community_cards)
+
+    # For 3-4 board cards: count ranks to detect trips+ conservatively.
+    rank_counts: dict[int, int] = {}
+    for c in list(hole_cards[:2]) + board:
+        r = c % 9
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+
+    max_count = max(rank_counts.values())
+    num_pairs = sum(1 for cnt in rank_counts.values() if cnt >= 2)
+
+    if max_count >= 4:
+        return 2  # Four of a kind
+    if max_count >= 3 and num_pairs >= 2:
+        return 3  # Full house
+    if max_count >= 3:
+        return 6  # Trips
+    if num_pairs >= 2:
+        return 7  # Two pair
+    if num_pairs >= 1:
+        return 8  # Pair
+    return 9  # High card
+
+
 # ---------------------------------------------------------------------------
 # Core equity function
 # ---------------------------------------------------------------------------
@@ -71,7 +152,8 @@ def compute_equity(
     opp_discarded: list[int] | None = None,
     my_discarded: list[int] | None = None,
     num_simulations: int = 300,
-) -> float:
+    return_nut_fraction: bool = False,
+) -> float | tuple[float, float]:
     """
     Monte Carlo equity (win-rate) for *my_cards* vs a random opponent.
 
@@ -87,10 +169,15 @@ def compute_equity(
         Our own discards (-1 entries ignored).
     num_simulations : int
         Number of random roll-outs.
+    return_nut_fraction : bool
+        If True, also return the fraction of wins that came from
+        flush or better (rank_class <= 4).  Used by discard logic
+        to prefer keeps with higher nut potential.
 
     Returns
     -------
-    float  in [0, 1]  –  estimated probability of winning.
+    float  in [0, 1]  when return_nut_fraction is False.
+    (float, float)    when return_nut_fraction is True — (equity, nut_frac).
     """
     if opp_discarded is None:
         opp_discarded = []
@@ -118,12 +205,15 @@ def compute_equity(
     sample_size = opp_needed + board_needed
 
     if sample_size > len(remaining):
-        return 0.5  # not enough unknowns to simulate
+        if return_nut_fraction:
+            return 0.5, 0.0
+        return 0.5
 
     # Pre-convert our cards once
     my_treys = [int_to_treys(c) for c in my_cards]
 
     wins = 0
+    nut_wins = 0
     total = 0
 
     for _ in range(num_simulations):
@@ -139,11 +229,22 @@ def compute_equity(
 
         if my_rank < opp_rank:
             wins += 1
+            if return_nut_fraction:
+                rc = _evaluator.get_rank_class(my_rank)
+                if rc <= 4:  # flush or better
+                    nut_wins += 1
         total += 1
 
     if total == 0:
+        if return_nut_fraction:
+            return 0.5, 0.0
         return 0.5
-    return wins / total
+
+    equity = wins / total
+    if return_nut_fraction:
+        nut_frac = nut_wins / wins if wins > 0 else 0.0
+        return equity, nut_frac
+    return equity
 
 
 def compute_equity_best2_of5(
@@ -253,9 +354,8 @@ def _keep_priority(keep: list[int], board: list[int]) -> int:
     """
     Priority tier for discard choice: higher = prefer this keep.
     - 5: made straight
-    - 4: trips+, two pair, or pocket overpair (never discard these for draws)
-    - 3: open-ended straight draw
-    - 2: pair (single, not overpair)
+    - 4: trips+, two pair, pocket pair (any), or board-connecting pair
+    - 3: open-ended straight draw  (same tier as low board pairs — equity decides)
     - 1: gutshot straight draw only
     - 0: no draw, no pair
     """
@@ -276,17 +376,19 @@ def _keep_priority(keep: list[int], board: list[int]) -> int:
     if has_trips or has_two_pair:
         return 4
 
+    # Pocket pairs: in a 27-card deck, any pocket pair is strong.
+    # Never discard a pocket pair for a straight draw.
     if len(keep) == 2:
         r0, r1 = _rank_index(keep[0]), _rank_index(keep[1])
         if r0 == r1:
-            board_ranks = [_rank_index(c) for c in board] if board else []
-            if not board_ranks or r0 >= max(board_ranks):
-                return 4  # pocket overpair — never discard for a draw
+            return 4
+
+    # Board-connecting pair (one of our cards matches a board card)
+    if has_pair:
+        return 4
 
     if draw_strength >= 2:
         return 3
-    if has_pair:
-        return 2
     if draw_strength == 1:
         return 1
     return 0
@@ -310,69 +412,91 @@ def _keep_rank_key(keep: list[int]) -> tuple[int, int]:
     return r[0], r[1]
 
 
+# Nut-fraction bonus: when two keeps have close equity, prefer the one
+# whose wins come more often from flushes or better (nut potential).
+NUT_FRAC_BONUS = 0.04  # effective equity bonus per 100% nut fraction
+
+# Discard mixing: when top keeps are within this score margin, randomly
+# select among them weighted by score to reduce predictability.
+DISCARD_MIX_MARGIN = 0.02   # keeps within 2% composite score are candidates (tighter)
+DISCARD_MIX_TEMPERATURE = 8.0  # higher = more weight to the best keep
+
 def best_discard(
     hole_cards: list[int],
     community_cards: list[int],
     opp_discarded: list[int] | None = None,
-    sims_per_pair: int = 550,
+    sims_per_pair: int = 800,
 ) -> tuple[int, int, float]:
     """
     Evaluate all C(5,2)=10 ways to keep 2 of 5 hole cards.
-    Favors straight draws over low pairs in 27-card deck.
+
+    Selection uses a composite score: raw equity plus a small bonus for
+    nut potential (fraction of wins from flush or better).  When multiple
+    keeps have near-equal scores, randomly select among them weighted by
+    score to reduce predictability (opponents see our discards).
 
     Returns (keep_idx_1, keep_idx_2, best_equity).
     """
-    board = [c for c in community_cards if c != -1]
-    best_i, best_j = 0, 1
-    best_eq = -1.0
-    best_priority = -1
-    best_has_pair_or_better = False
-    best_is_low_pair = False
-    best_rank_key = (-1, -1)
+    candidates: list[tuple[int, int, float, float, tuple[int, int]]] = []
 
     for i in range(5):
         for j in range(i + 1, 5):
             keep = [hole_cards[i], hole_cards[j]]
             discards = [hole_cards[k] for k in range(5) if k != i and k != j]
-            eq = compute_equity(
+            eq, nut_frac = compute_equity(
                 keep,
                 community_cards,
                 opp_discarded=opp_discarded,
                 my_discarded=discards,
                 num_simulations=sims_per_pair,
+                return_nut_fraction=True,
             )
-            priority = _keep_priority(keep, board)
-            has_pair_or_better = _has_pair_or_better(keep, board)
-            is_low = _is_low_pair(keep)
+            score = eq + NUT_FRAC_BONUS * nut_frac
             rank_key = _keep_rank_key(keep)
+            candidates.append((i, j, eq, score, rank_key))
 
-            # Priority order: open-ended/made straight (3) > trips/pair/two-pair (2) > gutshot (1) > nothing (0).
-            if priority > best_priority:
-                best_eq = eq
-                best_i, best_j = i, j
-                best_priority = priority
-                best_has_pair_or_better = has_pair_or_better
-                best_is_low_pair = is_low
-                best_rank_key = rank_key
-                continue
-            if priority < best_priority:
-                continue
+    if not candidates:
+        return 0, 1, 0.0
 
-            # Same priority tier: prefer higher equity.
-            if eq > best_eq + 1e-9:
-                best_eq = eq
-                best_i, best_j = i, j
-                best_has_pair_or_better = has_pair_or_better
-                best_is_low_pair = is_low
-                best_rank_key = rank_key
-                continue
+    best_score = max(c[3] for c in candidates)
 
-            # Tie-break for near-equal equity: higher rank keep (e.g. 9-8 > 9-3).
-            if abs(eq - best_eq) <= 0.020 and rank_key > best_rank_key:
-                best_eq = eq
-                best_i, best_j = i, j
-                best_has_pair_or_better = has_pair_or_better
-                best_is_low_pair = is_low
-                best_rank_key = rank_key
+    # Find the deterministic best (highest score, tie-break by rank key)
+    det_best = max(candidates, key=lambda c: (c[3], c[4]))
 
-    return best_i, best_j, best_eq
+    # Safety: if the best keep is a pocket pair or has an Ace, don't mix it away
+    det_keep = [hole_cards[det_best[0]], hole_cards[det_best[1]]]
+    det_is_pair = (_rank_index(det_keep[0]) == _rank_index(det_keep[1]))
+    det_has_ace = any(_rank_index(c) == 8 for c in det_keep)
+
+    if det_is_pair or det_has_ace:
+        return det_best[0], det_best[1], det_best[2]
+
+    # Safety: if any candidate is a pocket pair and scores within 0.05 of best,
+    # always prefer the pair (Monte Carlo noise can mask its true value).
+    PAIR_PROTECTION_MARGIN = 0.05
+    for i, j, eq, sc, rk in candidates:
+        keep = [hole_cards[i], hole_cards[j]]
+        if _rank_index(keep[0]) == _rank_index(keep[1]) and sc >= best_score - PAIR_PROTECTION_MARGIN:
+            return i, j, eq
+
+    # Gather keeps within the mix margin of the best
+    finalists = [(i, j, eq, sc, rk) for i, j, eq, sc, rk in candidates
+                 if sc >= best_score - DISCARD_MIX_MARGIN]
+
+    if len(finalists) == 1:
+        f = finalists[0]
+        return f[0], f[1], f[2]
+
+    # Weighted random selection among finalists
+    import math
+    weights = [math.exp(DISCARD_MIX_TEMPERATURE * (sc - best_score)) for _, _, _, sc, _ in finalists]
+    total_w = sum(weights)
+    r = random.random() * total_w
+    cumul = 0.0
+    for idx, (i, j, eq, sc, rk) in enumerate(finalists):
+        cumul += weights[idx]
+        if r <= cumul:
+            return i, j, eq
+
+    f = finalists[-1]
+    return f[0], f[1], f[2]

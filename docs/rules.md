@@ -121,7 +121,7 @@ In addition to regular matchmaking, teams can request specific matches:
 - **Location**: Giant Eagle Auditorium (Baker Hall A51)
 - **Scoring**: Winners determined by most matches won in the round-robin
 - **Note**: We reserve the right to invite additional teams if the ELO cutoff is close or if resources permit extra matches
-
+   
 ## Important Dates
 
 - **Competition Opens**: March 14, 2026, 2:00 PM EST

@@ -305,16 +305,22 @@ class OpponentModel:
         return "unknown"
 
     def is_tight(self) -> bool:
-        """Classify opponent as tight (low VPIP, high fold rate)."""
+        """Classify opponent as tight (low VPIP, high postflop fold rate)."""
         if self._hands_seen < 12:
-            return False  # Not enough data
-        return self.vpip < 0.40 and self.overall.fold_rate > 0.50
-    
+            return False
+        postflop_actions = sum(self.streets[s].actions for s in range(1, 4))
+        postflop_folds = sum(self.streets[s].folds for s in range(1, 4))
+        postflop_fold_rate = postflop_folds / postflop_actions if postflop_actions > 5 else self.overall.fold_rate
+        return self.vpip < 0.40 and postflop_fold_rate > 0.45
+
     def is_loose(self) -> bool:
-        """Classify opponent as loose (high VPIP, low fold rate)."""
+        """Classify opponent as loose (high VPIP, low postflop fold rate)."""
         if self._hands_seen < 12:
-            return False  # Not enough data
-        return self.vpip > 0.60 and self.overall.fold_rate < 0.40
+            return False
+        postflop_actions = sum(self.streets[s].actions for s in range(1, 4))
+        postflop_folds = sum(self.streets[s].folds for s in range(1, 4))
+        postflop_fold_rate = postflop_folds / postflop_actions if postflop_actions > 5 else self.overall.fold_rate
+        return self.vpip > 0.60 and postflop_fold_rate < 0.30
     
     def bet_sizing_tendency(self, street: int | None = None) -> str:
         """

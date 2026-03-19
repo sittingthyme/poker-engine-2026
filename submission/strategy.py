@@ -16,20 +16,20 @@ from submission.opponent_model import OpponentModel
 
 # Base equity bands (adjusted dynamically based on opponent)
 # 27-card deck: straights/flushes/full house are common; two pair is vulnerable – play tight
-BASE_STRONG_EQUITY = 0.85       # value-bet/raise only with very strong hands (was 0.82)
-BASE_MEDIUM_EQUITY = 0.65       # call only with solid equity (was 0.60)
-BASE_BLUFF_EQUITY_CEIL = 0.20   # base bluff range ceiling
+BASE_STRONG_EQUITY = 0.82       # value-bet/raise with strong hands
+BASE_MEDIUM_EQUITY = 0.58       # call with decent equity (lowered to defend more)
+BASE_BLUFF_EQUITY_CEIL = 0.22   # base bluff range ceiling (bluff slightly more)
 
 # Extra equity margin when calling (short deck: avoid thin calls vs draws)
-CALL_MARGIN_ABOVE_POT_ODDS = 0.10   # require equity >= pot_odds + this to call (was 0.06)
-# Minimum equity to call in marginal branch (avoid calling with weak draws)
-MIN_EQUITY_TO_CALL_MARGINAL = 0.55
+CALL_MARGIN_ABOVE_POT_ODDS = 0.07   # require equity >= pot_odds + this to call
+# Minimum equity to call in marginal branch
+MIN_EQUITY_TO_CALL_MARGINAL = 0.48
 # Street-specific call floors: later streets need stronger hands (no cards to come)
-TURN_MIN_EQUITY_CALL = 0.58
-RIVER_MIN_EQUITY_CALL = 0.62
+TURN_MIN_EQUITY_CALL = 0.52
+RIVER_MIN_EQUITY_CALL = 0.56
 # Extra margin when facing a big bet (>=50% pot)
-TURN_BIG_BET_EXTRA_MARGIN = 0.06
-RIVER_BIG_BET_EXTRA_MARGIN = 0.08
+TURN_BIG_BET_EXTRA_MARGIN = 0.04
+RIVER_BIG_BET_EXTRA_MARGIN = 0.05
 
 # Pot-size tightening: large pots on turn/river signal multi-street aggression
 LARGE_POT_THRESHOLD = 40     # pot >= 40 chips
@@ -39,41 +39,41 @@ HUGE_POT_EQUITY_BUMP = 0.04  # cumulative with above → +0.08 for huge pots
 
 # Board flush danger: 3-suit 27-card deck makes flushes very common.
 # When 3+ community cards share a suit, tighten calling if we don't hold the flush.
-FLUSH_DANGER_HIGH_EQUITY_BUMP = 0.10    # 3+ of one suit on board, we hold 0 of that suit
-FLUSH_DANGER_MODERATE_EQUITY_BUMP = 0.04  # 3+ of one suit on board, we hold 1 of that suit
+FLUSH_DANGER_HIGH_EQUITY_BUMP = 0.04    # 3+ of one suit on board, we hold 0 of that suit
+FLUSH_DANGER_MODERATE_EQUITY_BUMP = 0.01  # 3+ of one suit on board, we hold 1 of that suit
 
 # Paired-board danger: when board has a pair/trips, full houses and quads are common.
 # Tighten if we don't connect with the paired rank ourselves.
-PAIRED_BOARD_HIGH_EQUITY_BUMP = 0.08   # board paired/trips and we don't match that rank at all
-PAIRED_BOARD_MODERATE_EQUITY_BUMP = 0.03  # board paired/trips but we match with 1 card
+PAIRED_BOARD_HIGH_EQUITY_BUMP = 0.03   # board paired/trips and we don't match that rank at all
+PAIRED_BOARD_MODERATE_EQUITY_BUMP = 0.01  # board paired/trips but we match with 1 card
 
 # Post-flop commitment control: avoid escalating marginal hands in bloated pots.
 SOFT_COMMIT_BET = 40
 HIGH_COMMIT_BET = 60
 NEAR_ALLIN_BET = 80
-SOFT_COMMIT_CALL_BUMP = 0.02
-HIGH_COMMIT_CALL_BUMP = 0.05
-NEAR_ALLIN_CALL_BUMP = 0.08
+SOFT_COMMIT_CALL_BUMP = 0.01
+HIGH_COMMIT_CALL_BUMP = 0.03
+NEAR_ALLIN_CALL_BUMP = 0.05
 SOFT_COMMIT_POT_ODDS_BUMP = 0.01
-HIGH_COMMIT_POT_ODDS_BUMP = 0.03
-NEAR_ALLIN_POT_ODDS_BUMP = 0.05
+HIGH_COMMIT_POT_ODDS_BUMP = 0.02
+NEAR_ALLIN_POT_ODDS_BUMP = 0.03
 
 # Raise-back lockout: when facing post-flop aggression in committed pots,
 # default to call/fold and only re-raise with very premium equity.
 POSTFLOP_RAISEBACK_PREMIUM_EQUITY = 0.90
 
 # Danger compounding: when both flush and paired-board danger are present.
-COMPOUND_DANGER_TURN_BUMP = 0.05
-COMPOUND_DANGER_RIVER_BUMP = 0.08
+COMPOUND_DANGER_TURN_BUMP = 0.02
+COMPOUND_DANGER_RIVER_BUMP = 0.03
 
 # River overcommit guard when facing a raise in large commitments.
-RIVER_OVERCOMMIT_CALL_BUMP = 0.08
+RIVER_OVERCOMMIT_CALL_BUMP = 0.04
 
 # Early-match anti-variance controls (hands 0-300): reduce deep marginal spots.
 EARLY_PHASE_HAND_LIMIT = 300
-EARLY_PREFLOP_CALL_BUMP = 0.03
-EARLY_POSTFLOP_CALL_BUMP = 0.03
-EARLY_RERAISE_PREMIUM_EQUITY = 0.92
+EARLY_PREFLOP_CALL_BUMP = 0.02
+EARLY_POSTFLOP_CALL_BUMP = 0.02
+EARLY_RERAISE_PREMIUM_EQUITY = 0.90
 
 # Loss-pressure adaptation (derived from recent bankroll deltas).
 # Levels:
@@ -106,7 +106,6 @@ AGG_DANGER_EXTRA_BUMP = 0.03
 
 # Multi-street aggression pressure and raise-war controls.
 MULTISTREET_RAISE_PATTERN_BUMP = 0.03
-SECOND_RAISE_STREET_CALL_BUMP = 0.05
 SECOND_RAISE_STREET_PREMIUM_EQUITY = 0.90
 
 # Medium-pot spiral guardrail (where repeated pressure folds accumulate losses).
@@ -132,12 +131,12 @@ LOOSE_OPPONENT_STRONG_ADJ = +0.03   # Higher threshold vs loose (tighter)
 LOOSE_OPPONENT_MEDIUM_ADJ = +0.03   # Higher threshold vs loose
 
 # Raise sizing (fraction of pot)
-VALUE_RAISE_FRAC = 0.60     # standard value raise
-STRONG_RAISE_FRAC = 0.80    # big value raise for very strong hands
-BLUFF_RAISE_FRAC = 0.40     # bluff sizing (smaller to risk less)
+VALUE_RAISE_FRAC = 0.75     # standard value raise (bigger to extract value)
+STRONG_RAISE_FRAC = 1.00    # big value raise for very strong hands (pot-sized)
+BLUFF_RAISE_FRAC = 0.55     # bluff sizing (credible sizing to get folds)
 
 # Preflop open-raise sizing (multiples of BB=2)
-PREFLOP_OPEN_RAISE_MULTIPLIER = 3.5  # raise to 3.5x BB = 7 chips (top bots use 5-9x)
+PREFLOP_OPEN_RAISE_MULTIPLIER = 5.0  # raise to 5x BB = 10 chips (bigger steals vs folders)
 PREFLOP_3BET_MULTIPLIER = 2.5        # 3-bet to 2.5x the incoming raise (down from 3.0)
 
 # Facing a 3-bet: tighter ranges to avoid bloated pots with marginal hands
@@ -148,18 +147,18 @@ PREFLOP_4BET_MIN_EQUITY = 0.80       # need 80%+ equity to 4-bet (very premium o
 RERAISE_EQUITY_THRESHOLD = 0.78
 
 # Value betting: when checked to, bet with medium-strong hands instead of checking
-VALUE_BET_EQUITY = 0.72
+VALUE_BET_EQUITY = 0.65
 
 # Continuation bet (c-bet): bet the flop when we raised preflop, even without a strong hand
 CBET_EQUITY_THRESHOLD = 0.45   # c-bet with 45%+ equity on the flop
-CBET_FRAC = 0.55               # c-bet size: 55% of pot
+CBET_FRAC = 0.70               # c-bet size: 70% of pot (more pressure)
 CBET_GIVE_UP_EQUITY = 0.30     # don't c-bet with very weak hands (below 30%)
 
 # Preflop escalation cap: stop re-raising if already committed this many chips
 PREFLOP_RERAISE_CAP = 10
 PREFLOP_PREMIUM_EQUITY = 0.75  # only keep re-raising with top equity
 
-# Hand strength floor: never fold trips or better on the river (treys rank_class <= 6)
+# Hand strength floor: never fold trips or better post-flop (treys rank_class <= 6)
 TRIPS_OR_BETTER_RANK_CLASS = 6
 # Soft exception: on extremely dangerous river runouts with very heavy pressure,
 # allow trips to fold when equity estimate is very low.
@@ -167,9 +166,51 @@ RIVER_TRIPS_SOFT_FOLD_MAX_EQUITY = 0.52
 RIVER_TRIPS_SOFT_FOLD_MIN_BET_FRAC = 0.75
 RIVER_TRIPS_SOFT_FOLD_AGG_MIN = 1.8
 
+# Maximum total bump that can accumulate on call_floor above its base value.
+# Prevents over-tightening from stacking dozens of small adjustments.
+MAX_CALL_FLOOR_BUMP = 0.06
+
+# Pot-odds sanity: when continue_cost is tiny relative to pot, always call
+# if we have ANY reasonable hand. Prevents invest-then-fold for trivial amounts.
+TINY_BET_POT_FRAC = 0.15       # bet < 15% of pot = trivially small
+TINY_BET_MAX_EQUITY_REQ = 0.35  # need only 35% equity to call a tiny bet
+
+# Nut-awareness: in this 27-card 3-suit deck, flushes/full houses are common.
+# Suppress raising with non-nut hands on dangerous boards.
+# rank_class: 1=SF, 2=quads, 3=FH, 4=flush, 5=straight, 6=trips, 7=two pair, 8=pair, 9=high
+NUT_RAISE_MIN_ON_FLUSH_BOARD = 6     # allow trips+ to raise on flush boards
+NUT_RAISE_MIN_ON_PAIRED_BOARD = 5    # allow straights+ to raise on paired boards
+NUT_VBET_MIN_ON_FLUSH_BOARD = 6      # allow trips to value-bet on flush boards
+NUT_VBET_MIN_ON_PAIRED_BOARD = 6     # allow trips to value-bet on paired boards
+
+# Hand-class pot-size gates: HARD FOLD when weak made hands face big pots.
+# Thresholds are HIGH to avoid over-folding (typical flop pot is already ~18).
+# These are total commitment thresholds (my_bet + continue_cost).
+PAIR_HARD_FOLD_COMMIT = 55           # one pair → hard fold if total commit >= 55
+TWO_PAIR_HARD_FOLD_COMMIT_WET = 70   # two pair on wet boards → hard fold >= 70
+TWO_PAIR_HARD_FOLD_COMMIT_DRY = 95   # two pair on dry boards → almost never fold
+
+# Non-nut flush penalty: when we have a flush but our highest flush card
+# is low (rank < 7, i.e., below 9), we have a weak flush that loses to
+# better flushes.  Suppress raising and tighten calling.
+NON_NUT_FLUSH_CALL_BUMP = 0.05
+NON_NUT_FLUSH_RANK_THRESHOLD = 6   # rank_index < 6 (below 8) = non-nut flush
+
+# Straight-dominated: when we hold the low end of a straight on a
+# board where higher straights are possible, suppress raising.
+STRAIGHT_DOMINATED_CALL_BUMP = 0.04
+
+# Domination awareness: when many possible opponent hands beat us,
+# fold more aggressively.
+DOMINATION_LOW = 0.15    # 15%+ of combos beat us → mild caution
+DOMINATION_HIGH = 0.30   # 30%+ of combos beat us → strong caution
+DOMINATION_LOW_CALL_BUMP = 0.06
+DOMINATION_HIGH_CALL_BUMP = 0.12
+DOMINATION_FOLD_THRESHOLD = 0.40  # 40%+ of combos beat us → hard fold vs big bet
+
 # Bluff parameters – nearly eliminated vs math-based opponents
-BASE_BLUFF_FREQ = 0.02      # base bluff frequency (very conservative)
-MAX_BLUFF_FREQ = 0.08       # cap even vs very foldy opponents
+BASE_BLUFF_FREQ = 0.05      # base bluff frequency
+MAX_BLUFF_FREQ = 0.18       # cap vs very foldy opponents (exploit folders harder)
 MIN_HANDS_FOR_ADAPT = 20    # hands before trusting opponent model
 
 # Position bonus: being in position (acting last) is an advantage
@@ -453,6 +494,167 @@ def _paired_board_danger(observation: dict) -> int:
     return 2
 
 
+def _opp_flush_signal(observation: dict) -> int:
+    """
+    Infer whether opponent likely kept suited cards from their revealed discards.
+
+    Returns:
+       -1 — safety signal: opponent discarded 2+ of the danger suit → flush unlikely
+        0 — no signal (board not flushy, or insufficient info)
+        1 — possible (opponent discarded 1 of the danger suit)
+        2 — likely (opponent discarded 0 of the danger suit → kept all)
+    """
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    if len(community) < 3:
+        return 0
+
+    board_suits: dict[int, int] = {}
+    for c in community:
+        s = c // 9
+        board_suits[s] = board_suits.get(s, 0) + 1
+
+    danger_suit = None
+    for s, cnt in board_suits.items():
+        if cnt >= 3:
+            danger_suit = s
+            break
+
+    if danger_suit is None:
+        return 0
+
+    opp_discards = [c for c in observation.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
+    if len(opp_discards) < 3:
+        return 0
+
+    danger_in_discards = sum(1 for c in opp_discards if c // 9 == danger_suit)
+    if danger_in_discards == 0:
+        return 2
+    if danger_in_discards == 1:
+        return 1
+    # Opponent discarded 2+ of the danger suit — they're very unlikely to have a flush
+    return -1
+
+
+def _opp_straight_signal(observation: dict) -> int:
+    """
+    Infer whether opponent likely kept connectors from their revealed discards.
+
+    Returns:
+       -1 — safety: opponent discarded middle connectors → straight less likely
+        0 — no signal
+        1 — possible: opponent kept cards that connect well with the board
+    """
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    if len(community) < 3:
+        return 0
+
+    board_ranks = set()
+    for c in community:
+        r = c % 9
+        board_ranks.add(r)
+        if r == 8:  # Ace
+            board_ranks.add(-1)  # low ace for A-2-3 etc.
+
+    opp_discards = [c for c in observation.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
+    if len(opp_discards) < 3:
+        return 0
+
+    discarded_ranks = [c % 9 for c in opp_discards]
+    connectors_discarded = 0
+    for r in discarded_ranks:
+        for br in board_ranks:
+            if abs(r - br) <= 2:
+                connectors_discarded += 1
+                break
+
+    if connectors_discarded >= 2:
+        return -1  # discarded connectors → straight less likely
+    return 0
+
+
+def _is_non_nut_flush(observation: dict, hand_rank_class: int | None) -> bool:
+    """
+    Return True if we have a flush (rank_class==4) but our highest card
+    in the flush suit is low — meaning better flushes are likely to exist.
+
+    In this 3-suit deck with 9 cards per suit, a "low flush" (highest
+    card rank_index < NON_NUT_FLUSH_RANK_THRESHOLD) is frequently dominated.
+    """
+    if hand_rank_class is None or hand_rank_class != 4:
+        return False
+
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    my_cards = [c for c in observation.get("my_cards", []) if c != -1][:2]
+    if len(community) < 3:
+        return False
+
+    board_suits: dict[int, int] = {}
+    for c in community:
+        s = c // 9
+        board_suits[s] = board_suits.get(s, 0) + 1
+
+    flush_suit = None
+    for s, cnt in board_suits.items():
+        if cnt >= 3:
+            flush_suit = s
+            break
+
+    if flush_suit is None:
+        return False
+
+    my_flush_ranks = [c % 9 for c in my_cards if c // 9 == flush_suit]
+    if not my_flush_ranks:
+        return False
+
+    return max(my_flush_ranks) < NON_NUT_FLUSH_RANK_THRESHOLD
+
+
+def _is_straight_dominated(observation: dict, hand_rank_class: int | None) -> bool:
+    """
+    Return True if we have a straight (rank_class==5) but we hold
+    the low end, meaning higher straights are possible on this board.
+
+    Checks: if the board contains ranks above our highest hole card
+    that could extend the straight window, we're on the low end.
+    """
+    if hand_rank_class is None or hand_rank_class != 5:
+        return False
+
+    community = [c for c in observation.get("community_cards", []) if c != -1]
+    my_cards = [c for c in observation.get("my_cards", []) if c != -1][:2]
+    if len(community) < 3:
+        return False
+
+    my_ranks = [c % 9 for c in my_cards]
+    board_ranks = [c % 9 for c in community]
+    all_ranks = set(my_ranks + board_ranks)
+    my_max = max(my_ranks)
+
+    # Find which straight window(s) we complete
+    straight_windows = [
+        [0, 1, 2, 3, 4],
+        [1, 2, 3, 4, 5],
+        [2, 3, 4, 5, 6],
+        [3, 4, 5, 6, 7],
+        [4, 5, 6, 7, 8],
+    ]
+    for window in straight_windows:
+        if set(window).issubset(all_ranks):
+            # We make this straight. Check if we hold the low end:
+            # if our highest card is NOT the top of this window AND
+            # a higher straight window is possible on the board.
+            top = max(window)
+            if my_max < top:
+                # We hold the bottom — a higher straight might exist
+                # Check if board could support a higher window
+                for higher in straight_windows:
+                    if max(higher) > top:
+                        board_in_higher = sum(1 for r in board_ranks if r in higher)
+                        if board_in_higher >= 3:
+                            return True
+    return False
+
+
 def decide_action(
     equity: float,
     observation: dict,
@@ -495,6 +697,7 @@ def decide_action(
     opp_postflop_raise_density = float(_info.get("opp_postflop_raise_density", 0.0))
     opp_postflop_reraise_density = float(_info.get("opp_postflop_reraise_density", 0.0))
     opp_high_commit_pressure_density = float(_info.get("opp_high_commit_pressure_density", 0.0))
+    domination_frac = float(_info.get("domination_frac", 0.0))
 
     loss_pressure = 0
     if recent_delta_10 <= LOSS_PRESSURE_SEVERE_DELTA10 or recent_delta_30 <= LOSS_PRESSURE_SEVERE_DELTA30:
@@ -518,7 +721,7 @@ def decide_action(
         opp_high_commit_pressure = 1
 
     # Need lead > 1 chip per remaining hand so folding every hand still leaves us ahead
-    min_lead_to_fold = 2 * hands_left
+    min_lead_to_fold = 1.5 * hands_left
     if valid[0] and hands_left > 0 and my_bankroll > min_lead_to_fold:
         return (0, 0, 0, 0)  # FOLD
 
@@ -675,21 +878,15 @@ def decide_action(
     call_threshold_adj = 0.0
     if adapted and opp_agg > 2.0:
         call_threshold_adj = -AGG_CALL_DISCOUNT
-    # Early-loss stabilization: when bleeding chips early, tighten up temporarily.
-    if early_phase:
-        if loss_pressure == 1:
-            call_threshold_adj += LOSS_PRESSURE_MILD_CALL_BUMP
-        elif loss_pressure >= 2:
-            call_threshold_adj += LOSS_PRESSURE_SEVERE_CALL_BUMP
     if street >= 1 and continue_cost > 0:
         if opp_postflop_pressure == 1:
             call_threshold_adj += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
         elif opp_postflop_pressure >= 2:
             call_threshold_adj += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
         if opp_reraise_pressure == 1:
-            call_threshold_adj += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
+            call_threshold_adj -= OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP  # high reraise freq = call wider
         elif opp_reraise_pressure >= 2:
-            call_threshold_adj += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
+            call_threshold_adj -= OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP  # very high reraise freq = call much wider
         if opp_high_commit_pressure == 1:
             call_threshold_adj += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
         elif opp_high_commit_pressure >= 2:
@@ -721,6 +918,17 @@ def decide_action(
     # ---- Board texture: flush and paired-board danger in 3-suit deck ----
     flush_danger = _flush_danger(observation) if street >= 1 else 0
     pair_danger = _paired_board_danger(observation) if street >= 1 else 0
+    opp_flush_sig = _opp_flush_signal(observation) if street >= 1 else 0
+    opp_straight_sig = _opp_straight_signal(observation) if street >= 1 else 0
+    non_nut_flush = _is_non_nut_flush(observation, hand_rank_class) if street >= 1 else False
+    straight_dominated = _is_straight_dominated(observation, hand_rank_class) if street >= 1 else False
+
+    # Safety signal from opponent discards: reduce danger bumps when opponent
+    # likely does NOT have the draw (discarded key cards).
+    if opp_flush_sig == -1:
+        flush_danger = max(flush_danger - 1, 0)
+    if opp_straight_sig == -1 and straight_dominated:
+        straight_dominated = False
 
     # ---- Optional baseline policy via StrategyTable (blended with heuristic) ----
     blended_action: tuple[int, int, int, int] | None = None
@@ -796,48 +1004,87 @@ def decide_action(
                     return (1, amount, 0, 0)  # RAISE
         return final_action
 
-    # ---- Hand-strength floor: usually never fold trips or better on river ----
+    # ---- Hard stack-off gates: fold weak made hands in big pots ----
+    # These run BEFORE the trips+ protection so board-aware hard folds take priority.
+    total_commit = my_bet + continue_cost
+    wet_board = (flush_danger >= 1) or (pair_danger >= 1)
     if (
-        street == 3
+        street >= 1
+        and continue_cost > 0
+        and hand_rank_class is not None
+        and valid[0]
+    ):
+        hard_fold = False
+        # One pair: never stack off
+        if hand_rank_class >= 8 and total_commit >= PAIR_HARD_FOLD_COMMIT:
+            hard_fold = True
+        # Two pair: fold on wet boards at lower threshold, dry boards at higher
+        if hand_rank_class == 7:
+            threshold = TWO_PAIR_HARD_FOLD_COMMIT_WET if wet_board else TWO_PAIR_HARD_FOLD_COMMIT_DRY
+            if total_commit >= threshold:
+                hard_fold = True
+        # Domination gate: only for pair/two-pair (trips+ handled by soft river exception)
+        if domination_frac >= DOMINATION_FOLD_THRESHOLD and hand_rank_class >= 7:
+            hard_fold = True
+        if hard_fold:
+            return (0, 0, 0, 0)
+
+    # ---- Hand-strength floor: never fold trips or better post-flop ----
+    # (Only reached if the hard stack-off gates above did NOT trigger.)
+    if (
+        street >= 1
         and hand_rank_class is not None
         and hand_rank_class <= TRIPS_OR_BETTER_RANK_CLASS
         and continue_cost > 0
     ):
-        # Soft exception: allow fold only in extreme danger + pressure + low equity.
-        river_bet_frac = (continue_cost / pot) if pot > 0 else 0.0
-        extreme_board_danger = (flush_danger == 2) or (flush_danger >= 1 and pair_danger >= 1)
-        extreme_pressure = (
-            river_bet_frac >= RIVER_TRIPS_SOFT_FOLD_MIN_BET_FRAC
-            and (
-                opp_agg >= RIVER_TRIPS_SOFT_FOLD_AGG_MIN
-                or opp_postflop_pressure >= 2
-                or opp_reraise_pressure >= 2
-                or opp_high_commit_pressure >= 1
+        # Soft exception (river only): allow fold in extreme danger + pressure + low equity.
+        # Never fold the nuts: SF (1), quads (2), full house (3) are unbeatable or near-unbeatable.
+        if street == 3:
+            river_bet_frac = (continue_cost / pot) if pot > 0 else 0.0
+            extreme_board_danger = (flush_danger == 2) or (flush_danger >= 1 and pair_danger >= 1)
+            extreme_pressure = (
+                river_bet_frac >= RIVER_TRIPS_SOFT_FOLD_MIN_BET_FRAC
+                and (
+                    opp_agg >= RIVER_TRIPS_SOFT_FOLD_AGG_MIN
+                    or opp_postflop_pressure >= 2
+                    or opp_reraise_pressure >= 2
+                    or opp_high_commit_pressure >= 1
+                )
             )
-        )
-        if (
-            extreme_board_danger
-            and extreme_pressure
-            and adj_equity <= RIVER_TRIPS_SOFT_FOLD_MAX_EQUITY
-            and valid[0]
-        ):
-            return (0, 0, 0, 0)
+            if (
+                extreme_board_danger
+                and extreme_pressure
+                and adj_equity <= RIVER_TRIPS_SOFT_FOLD_MAX_EQUITY
+                and valid[0]
+            ):
+                return (0, 0, 0, 0)
 
         # Default behavior: with trips+, at least call; raise if equity is high.
-        river_raise_floor = RERAISE_EQUITY_THRESHOLD
+        trips_raise_floor = RERAISE_EQUITY_THRESHOLD
         if commit_band >= 2:
-            river_raise_floor = max(river_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
+            trips_raise_floor = max(trips_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
         if lockout_reraise:
-            river_raise_floor = max(river_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
-        if early_phase:
-            river_raise_floor = max(river_raise_floor, EARLY_RERAISE_PREMIUM_EQUITY)
-        if adj_equity >= river_raise_floor and valid[1]:
-            frac = VALUE_RAISE_FRAC
-            raw = int(pot * frac)
+            trips_raise_floor = max(trips_raise_floor, POSTFLOP_RAISEBACK_PREMIUM_EQUITY)
+        if adj_equity >= trips_raise_floor and valid[1]:
+            raw = int(pot * VALUE_RAISE_FRAC)
             amount = max(min_raise, min(raw, max_raise))
             return (1, amount, 0, 0)
         if valid[3]:
-            return (3, 0, 0, 0)
+            return (3, 0, 0, 0)  # ← always reached; no further conditions
+        if valid[2]:
+            return (2, 0, 0, 0)
+
+    # ---- Trips+ value bet when checked to ----
+    if (
+        street >= 1
+        and hand_rank_class is not None
+        and hand_rank_class <= TRIPS_OR_BETTER_RANK_CLASS
+        and continue_cost == 0
+        and valid[1]
+    ):
+        raw = int(pot * VALUE_RAISE_FRAC)
+        amount = max(min_raise, min(raw, max_raise))
+        return _choose_final((1, amount, 0, 0))
 
     # ---- Heuristic decision tree (existing logic) ----
 
@@ -854,12 +1101,26 @@ def decide_action(
             can_strong_raise = False
         if loss_pressure >= 2 and street >= 1 and continue_cost > 0 and adj_equity < POSTFLOP_RAISEBACK_PREMIUM_EQUITY:
             can_strong_raise = False
+        # Nut-awareness: on dangerous boards, only raise with nut-class hands.
+        if can_strong_raise and street >= 1 and hand_rank_class is not None:
+            if flush_danger >= 1 and hand_rank_class > NUT_RAISE_MIN_ON_FLUSH_BOARD:
+                can_strong_raise = False
+            if pair_danger >= 2 and hand_rank_class > NUT_RAISE_MIN_ON_PAIRED_BOARD:
+                can_strong_raise = False
+            if opp_flush_sig >= 2 and hand_rank_class > NUT_RAISE_MIN_ON_FLUSH_BOARD:
+                can_strong_raise = False
+            if non_nut_flush:
+                can_strong_raise = False
+            if straight_dominated:
+                can_strong_raise = False
         if can_strong_raise:  # RAISE
             if street == 0:
                 # Preflop: use BB-based sizing instead of pot-fraction
                 if continue_cost <= 0 or my_bet <= 2:
-                    # Open-raise or first raise: 3.5x BB
-                    raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
+                    open_mult = PREFLOP_OPEN_RAISE_MULTIPLIER
+                    if adapted and opp_model is not None and opp_model.vpip < 0.35:
+                        open_mult *= 0.7
+                    raw = int(2 * open_mult)
                 else:
                     # 3-bet: 3x the incoming raise
                     raw = int(opp_bet * PREFLOP_3BET_MULTIPLIER)
@@ -915,12 +1176,6 @@ def decide_action(
     if early_phase and street >= 1 and continue_cost > 0:
         call_floor += EARLY_POSTFLOP_CALL_BUMP
         min_equity_to_call += EARLY_POSTFLOP_CALL_BUMP
-    if loss_pressure == 1 and continue_cost > 0:
-        call_floor += LOSS_PRESSURE_MILD_CALL_BUMP
-        min_equity_to_call += LOSS_PRESSURE_MILD_CALL_BUMP
-    elif loss_pressure >= 2 and continue_cost > 0:
-        call_floor += LOSS_PRESSURE_SEVERE_CALL_BUMP
-        min_equity_to_call += LOSS_PRESSURE_SEVERE_CALL_BUMP
     if continue_cost > 0 and street >= 1:
         if opp_postflop_pressure == 1:
             call_floor += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
@@ -931,21 +1186,10 @@ def decide_action(
     if continue_cost > 0 and street >= 1 and multi_street_raise_pressure:
         call_floor += MULTISTREET_RAISE_PATTERN_BUMP
         min_equity_to_call += MULTISTREET_RAISE_PATTERN_BUMP
-    if second_raise_this_street:
-        call_floor += SECOND_RAISE_STREET_CALL_BUMP
-        min_equity_to_call += SECOND_RAISE_STREET_CALL_BUMP
-    if (
-        continue_cost > 0
-        and street >= 1
-        and MEDIUM_POT_MIN <= pot <= MEDIUM_POT_MAX
-        and loss_pressure >= 1
-        and opp_postflop_pressure >= 1
-    ):
-        call_floor += MEDIUM_POT_SPIRAL_BUMP
-        min_equity_to_call += MEDIUM_POT_SPIRAL_BUMP
-        if loss_pressure >= 2 or opp_postflop_pressure >= 2:
-            call_floor += MEDIUM_POT_SPIRAL_EXTRA_BUMP
-            min_equity_to_call += MEDIUM_POT_SPIRAL_EXTRA_BUMP
+    if second_raise_this_street and continue_cost > 0 and pot > 0:
+        pot_odds_anchor = (continue_cost / (continue_cost + pot)) + 0.04
+        call_floor = min(call_floor, pot_odds_anchor)
+        min_equity_to_call = min(min_equity_to_call, pot_odds_anchor)
     # Large pot tightening: multi-street aggression makes marginal hands worse
     if street >= 2 and pot >= LARGE_POT_THRESHOLD:
         call_floor += LARGE_POT_EQUITY_BUMP
@@ -972,6 +1216,13 @@ def decide_action(
         min_equity_to_call += HIGH_COMMIT_DANGER_EXTRA_BUMP
     if flush_danger >= 1 and pair_danger >= 1 and street >= 1 and adapted and opp_agg >= AGG_DANGER_THRESHOLD:
         call_floor += AGG_DANGER_EXTRA_BUMP
+    # Opponent discard signal: if opponent likely has a flush, tighten calling
+    if opp_flush_sig >= 2 and street >= 1 and continue_cost > 0:
+        call_floor += FLUSH_DANGER_HIGH_EQUITY_BUMP
+        min_equity_to_call += FLUSH_DANGER_HIGH_EQUITY_BUMP
+    elif opp_flush_sig >= 1 and street >= 1 and continue_cost > 0:
+        call_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+        min_equity_to_call += FLUSH_DANGER_MODERATE_EQUITY_BUMP
     # Invest-then-pressure guard: after multiple raises in-hand, avoid thin continues.
     if street >= 1 and continue_cost > 0 and my_raises_this_hand >= 2:
         call_floor += INVESTED_THEN_PRESSURED_CALL_BUMP
@@ -979,6 +1230,34 @@ def decide_action(
     # River overcommit guard: when already deep and facing aggression, demand more.
     if street == 3 and continue_cost > 0 and commit_band >= 2:
         min_equity_to_call += RIVER_OVERCOMMIT_CALL_BUMP
+    # Non-nut flush / dominated straight: tighten calling
+    if continue_cost > 0 and street >= 1:
+        if non_nut_flush:
+            call_floor += NON_NUT_FLUSH_CALL_BUMP
+            min_equity_to_call += NON_NUT_FLUSH_CALL_BUMP
+        if straight_dominated:
+            call_floor += STRAIGHT_DOMINATED_CALL_BUMP
+            min_equity_to_call += STRAIGHT_DOMINATED_CALL_BUMP
+    # Domination awareness: tighten calling when many combos beat us
+    if continue_cost > 0 and domination_frac > 0:
+        if domination_frac >= DOMINATION_HIGH:
+            call_floor += DOMINATION_HIGH_CALL_BUMP
+            min_equity_to_call += DOMINATION_HIGH_CALL_BUMP
+        elif domination_frac >= DOMINATION_LOW:
+            call_floor += DOMINATION_LOW_CALL_BUMP
+            min_equity_to_call += DOMINATION_LOW_CALL_BUMP
+
+    # --- Cap total bumps to prevent over-tightening ---
+    base_call_floor = RIVER_MIN_EQUITY_CALL if street >= 3 else (TURN_MIN_EQUITY_CALL if street >= 2 else MIN_EQUITY_TO_CALL_MARGINAL)
+    if call_floor > base_call_floor + MAX_CALL_FLOOR_BUMP:
+        call_floor = base_call_floor + MAX_CALL_FLOOR_BUMP
+
+    # --- Pot-odds sanity: tiny bet into large pot = always call with any hand ---
+    if continue_cost > 0 and pot > 0:
+        bet_frac_vs_pot = continue_cost / pot
+        if bet_frac_vs_pot < TINY_BET_POT_FRAC:
+            call_floor = min(call_floor, TINY_BET_MAX_EQUITY_REQ)
+            min_equity_to_call = min(min_equity_to_call, TINY_BET_MAX_EQUITY_REQ)
 
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
@@ -1007,6 +1286,18 @@ def decide_action(
                 can_reraise = False
             if loss_pressure >= 1 and street >= 1 and adj_equity < POSTFLOP_RAISEBACK_PREMIUM_EQUITY:
                 can_reraise = False
+            # Nut-awareness: don't re-raise with non-nut hands on dangerous boards
+            if can_reraise and street >= 1 and hand_rank_class is not None:
+                if flush_danger >= 1 and hand_rank_class > NUT_RAISE_MIN_ON_FLUSH_BOARD:
+                    can_reraise = False
+                if pair_danger >= 2 and hand_rank_class > NUT_RAISE_MIN_ON_PAIRED_BOARD:
+                    can_reraise = False
+                if opp_flush_sig >= 2 and hand_rank_class > NUT_RAISE_MIN_ON_FLUSH_BOARD:
+                    can_reraise = False
+                if non_nut_flush:
+                    can_reraise = False
+                if straight_dominated:
+                    can_reraise = False
             if can_reraise:
                 if street == 0:
                     raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
@@ -1065,7 +1356,20 @@ def decide_action(
                     vbet_threshold += LOSS_PRESSURE_MILD_CALL_BUMP
                 elif loss_pressure >= 2:
                     vbet_threshold += LOSS_PRESSURE_SEVERE_CALL_BUMP
-                if adj_equity >= vbet_threshold:
+                # Nut-awareness: suppress value-betting non-nut hands on scary boards
+                nut_blocked = False
+                if hand_rank_class is not None and street >= 1:
+                    if flush_danger >= 1 and hand_rank_class > NUT_VBET_MIN_ON_FLUSH_BOARD:
+                        nut_blocked = True
+                    if pair_danger >= 2 and hand_rank_class > NUT_VBET_MIN_ON_PAIRED_BOARD:
+                        nut_blocked = True
+                    if opp_flush_sig >= 2 and hand_rank_class > NUT_VBET_MIN_ON_FLUSH_BOARD:
+                        nut_blocked = True
+                    if non_nut_flush:
+                        nut_blocked = True
+                    if straight_dominated:
+                        nut_blocked = True
+                if adj_equity >= vbet_threshold and not nut_blocked:
                     raw = int(pot * VALUE_RAISE_FRAC)
                     amount = max(min_raise, min(raw, max_raise))
                     action = (1, amount, 0, 0)
@@ -1082,6 +1386,16 @@ def decide_action(
             and adj_equity >= CBET_EQUITY_THRESHOLD
             and adj_equity >= CBET_GIVE_UP_EQUITY):
         raw = int(pot * CBET_FRAC)
+        amount = max(min_raise, min(raw, max_raise))
+        return _choose_final((1, amount, 0, 0))
+
+    # 2.6. TURN CONTINUATION BET: barrel the turn when checked to with decent equity
+    if (street == 2
+            and continue_cost == 0
+            and valid[1]
+            and adj_equity >= 0.50
+            and my_raises_this_hand >= 1):
+        raw = int(pot * 0.65)
         amount = max(min_raise, min(raw, max_raise))
         return _choose_final((1, amount, 0, 0))
 
@@ -1120,12 +1434,6 @@ def decide_action(
     if early_phase and street >= 1 and continue_cost > 0:
         marginal_floor += EARLY_POSTFLOP_CALL_BUMP
         marginal_min_eq += EARLY_POSTFLOP_CALL_BUMP
-    if loss_pressure == 1 and continue_cost > 0:
-        marginal_floor += LOSS_PRESSURE_MILD_CALL_BUMP
-        marginal_min_eq += LOSS_PRESSURE_MILD_CALL_BUMP
-    elif loss_pressure >= 2 and continue_cost > 0:
-        marginal_floor += LOSS_PRESSURE_SEVERE_CALL_BUMP
-        marginal_min_eq += LOSS_PRESSURE_SEVERE_CALL_BUMP
     if continue_cost > 0 and street >= 1:
         if opp_postflop_pressure == 1:
             marginal_floor += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
@@ -1134,11 +1442,11 @@ def decide_action(
             marginal_floor += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
             marginal_min_eq += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
         if opp_reraise_pressure == 1:
-            marginal_floor += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
-            marginal_min_eq += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
+            marginal_floor -= OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP  # high reraise freq = call wider
+            marginal_min_eq -= OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
         elif opp_reraise_pressure >= 2:
-            marginal_floor += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
-            marginal_min_eq += OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
+            marginal_floor -= OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP  # very high reraise freq = call much wider
+            marginal_min_eq -= OPP_POSTFLOP_PRESSURE_HIGH_CALL_BUMP
         if opp_high_commit_pressure == 1:
             marginal_floor += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
             marginal_min_eq += OPP_POSTFLOP_PRESSURE_MILD_CALL_BUMP
@@ -1148,9 +1456,10 @@ def decide_action(
     if continue_cost > 0 and street >= 1 and multi_street_raise_pressure:
         marginal_floor += MULTISTREET_RAISE_PATTERN_BUMP
         marginal_min_eq += MULTISTREET_RAISE_PATTERN_BUMP
-    if second_raise_this_street:
-        marginal_floor += SECOND_RAISE_STREET_CALL_BUMP
-        marginal_min_eq += SECOND_RAISE_STREET_CALL_BUMP
+    if second_raise_this_street and continue_cost > 0 and pot > 0:
+        pot_odds_anchor = (continue_cost / (continue_cost + pot)) + 0.04
+        marginal_floor = min(marginal_floor, pot_odds_anchor)
+        marginal_min_eq = min(marginal_min_eq, pot_odds_anchor)
     if (
         continue_cost > 0
         and street >= 1
@@ -1188,11 +1497,47 @@ def decide_action(
         marginal_min_eq += HIGH_COMMIT_DANGER_EXTRA_BUMP
     if flush_danger >= 1 and pair_danger >= 1 and street >= 1 and adapted and opp_agg >= AGG_DANGER_THRESHOLD:
         marginal_floor += AGG_DANGER_EXTRA_BUMP
+    # Opponent discard signal: if opponent likely has a flush, tighten calling
+    if opp_flush_sig >= 2 and street >= 1 and continue_cost > 0:
+        marginal_floor += FLUSH_DANGER_HIGH_EQUITY_BUMP
+        marginal_min_eq += FLUSH_DANGER_HIGH_EQUITY_BUMP
+    elif opp_flush_sig >= 1 and street >= 1 and continue_cost > 0:
+        marginal_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+        marginal_min_eq += FLUSH_DANGER_MODERATE_EQUITY_BUMP
     if street >= 1 and continue_cost > 0 and my_raises_this_hand >= 2:
         marginal_floor += INVESTED_THEN_PRESSURED_CALL_BUMP
         marginal_min_eq += INVESTED_THEN_PRESSURED_CALL_BUMP
     if street == 3 and continue_cost > 0 and commit_band >= 2:
         marginal_min_eq += RIVER_OVERCOMMIT_CALL_BUMP
+    # Non-nut flush / dominated straight (marginal branch)
+    if continue_cost > 0 and street >= 1:
+        if non_nut_flush:
+            marginal_floor += NON_NUT_FLUSH_CALL_BUMP
+            marginal_min_eq += NON_NUT_FLUSH_CALL_BUMP
+        if straight_dominated:
+            marginal_floor += STRAIGHT_DOMINATED_CALL_BUMP
+            marginal_min_eq += STRAIGHT_DOMINATED_CALL_BUMP
+    # Domination awareness (marginal branch)
+    if continue_cost > 0 and domination_frac > 0:
+        if domination_frac >= DOMINATION_HIGH:
+            marginal_floor += DOMINATION_HIGH_CALL_BUMP
+            marginal_min_eq += DOMINATION_HIGH_CALL_BUMP
+        elif domination_frac >= DOMINATION_LOW:
+            marginal_floor += DOMINATION_LOW_CALL_BUMP
+            marginal_min_eq += DOMINATION_LOW_CALL_BUMP
+
+    # --- Cap total bumps to prevent over-tightening ---
+    base_marginal_floor = RIVER_MIN_EQUITY_CALL if street >= 3 else (TURN_MIN_EQUITY_CALL if street >= 2 else MIN_EQUITY_TO_CALL_MARGINAL)
+    if marginal_floor > base_marginal_floor + MAX_CALL_FLOOR_BUMP:
+        marginal_floor = base_marginal_floor + MAX_CALL_FLOOR_BUMP
+
+    # --- Pot-odds sanity: tiny bet into large pot = always call with any hand ---
+    if continue_cost > 0 and pot > 0:
+        m_bet_frac_vs_pot = continue_cost / pot
+        if m_bet_frac_vs_pot < TINY_BET_POT_FRAC:
+            marginal_floor = min(marginal_floor, TINY_BET_MAX_EQUITY_REQ)
+            marginal_min_eq = min(marginal_min_eq, TINY_BET_MAX_EQUITY_REQ)
+
     if continue_cost > 0 and adj_equity >= marginal_min_eq and adj_equity >= marginal_floor:
         if valid[3]:
             action = (3, 0, 0, 0)
@@ -1228,10 +1573,6 @@ def decide_action(
             bluff_freq *= 0.25
         if early_phase:
             bluff_freq *= 0.75
-        if opp_postflop_pressure >= 1 or opp_reraise_pressure >= 1:
-            bluff_freq *= 0.60
-        if opp_high_commit_pressure >= 1:
-            bluff_freq *= 0.50
         if my_raises_this_hand >= 2:
             bluff_freq *= 0.50
         if (valid[1] and adj_equity < bluff_equity_ceil
@@ -1254,10 +1595,6 @@ def decide_action(
             bluff_freq *= 0.25
         if early_phase:
             bluff_freq *= 0.75
-        if opp_postflop_pressure >= 1 or opp_reraise_pressure >= 1:
-            bluff_freq *= 0.60
-        if opp_high_commit_pressure >= 1:
-            bluff_freq *= 0.50
         if my_raises_this_hand >= 2:
             bluff_freq *= 0.50
         if random.random() < bluff_freq and opp_fold_rate > 0.55:

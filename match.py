@@ -212,8 +212,6 @@ def play_hand(
     bot_1_last_move: Optional[PokerEnv.ActionType] = None
 
     while not terminated:
-        info["bankroll_0"] = bankrolls[0]
-        info["bankroll_1"] = bankrolls[1]
         bot0_payload = prepare_payload(obs0, reward0, terminated, truncated, info)
         bot1_payload = prepare_payload(obs1, reward1, terminated, truncated, info)
 
@@ -245,12 +243,7 @@ def play_hand(
                 raise TimeoutError("Player 1 exceeded time limit")
             bot_1_last_move = action_type
 
-        observer_payload_to_send = dict(observer_payload)
-        observer_obs = dict(observer_payload_to_send["observation"])
-        observer_obs["opp_last_action"] = action_type.name
-        observer_payload_to_send["observation"] = observer_obs
-        call_agent_api("POST", observer_url, SEND_OBS_ENDPOINT, observer_payload_to_send, logger, 1 - current_player)
-
+       
         def fmt_cards(cards_list):
             return [env.int_card_to_str(c) for c in cards_list if c != -1]
 
