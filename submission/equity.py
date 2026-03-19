@@ -65,9 +65,9 @@ def get_hand_rank_class_partial(hole_cards: list[int], community_cards: list[int
     """
     Like get_hand_rank_class but works with 3-5 community cards.
 
-    For fewer than 5 community cards, pads with random remaining cards
-    and returns a conservative (pessimistic) rank class using simple
-    rank counting rather than treys evaluation.
+    For 3-4 board cards, uses treys on the visible cards (best 5 of 5 on the flop,
+    best 5 of 6 on the turn). This correctly classifies made straights and flushes;
+    the old rank-count-only path returned class 9 for those and allowed folding the nuts.
 
     Returns None if insufficient cards.
     """
@@ -78,26 +78,10 @@ def get_hand_rank_class_partial(hole_cards: list[int], community_cards: list[int
     if len(board) == 5:
         return get_hand_rank_class(hole_cards, community_cards)
 
-    # For 3-4 board cards: count ranks to detect trips+ conservatively.
-    rank_counts: dict[int, int] = {}
-    for c in list(hole_cards[:2]) + board:
-        r = c % 9
-        rank_counts[r] = rank_counts.get(r, 0) + 1
-
-    max_count = max(rank_counts.values())
-    num_pairs = sum(1 for cnt in rank_counts.values() if cnt >= 2)
-
-    if max_count >= 4:
-        return 2  # Four of a kind
-    if max_count >= 3 and num_pairs >= 2:
-        return 3  # Full house
-    if max_count >= 3:
-        return 6  # Trips
-    if num_pairs >= 2:
-        return 7  # Two pair
-    if num_pairs >= 1:
-        return 8  # Pair
-    return 9  # High card
+    hand_treys = [int_to_treys(c) for c in hole_cards[:2]]
+    board_treys = [int_to_treys(c) for c in board]
+    rank = evaluate_hand(hand_treys, board_treys)
+    return _evaluator.get_rank_class(rank)
 
 
 # ---------------------------------------------------------------------------

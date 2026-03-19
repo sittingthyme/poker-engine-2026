@@ -21,15 +21,23 @@ BASE_MEDIUM_EQUITY = 0.65       # call only with solid equity (was 0.60)
 BASE_BLUFF_EQUITY_CEIL = 0.20   # base bluff range ceiling
 
 # Extra equity margin when calling (short deck: avoid thin calls vs draws)
-CALL_MARGIN_ABOVE_POT_ODDS = 0.10   # require equity >= pot_odds + this to call (was 0.06)
+CALL_MARGIN_ABOVE_POT_ODDS = 0.11   # slight global tighten; shoves use extra bumps below
 # Minimum equity to call in marginal branch (avoid calling with weak draws)
 MIN_EQUITY_TO_CALL_MARGINAL = 0.55
 # Street-specific call floors: later streets need stronger hands (no cards to come)
 TURN_MIN_EQUITY_CALL = 0.58
 RIVER_MIN_EQUITY_CALL = 0.62
 # Extra margin when facing a big bet (>=50% pot)
-TURN_BIG_BET_EXTRA_MARGIN = 0.06
-RIVER_BIG_BET_EXTRA_MARGIN = 0.08
+FLOP_BIG_BET_EXTRA_MARGIN = 0.06   # flop had no big-bet bump; helps vs pot-sized leads / shoves
+TURN_BIG_BET_EXTRA_MARGIN = 0.09   # was 0.06
+RIVER_BIG_BET_EXTRA_MARGIN = 0.12  # was 0.08
+# Shove-like bets (very large vs current pot): on top of big-bet margins
+POSTFLOP_ALLINISH_BET_FRAC = 0.80   # continue_cost / pot
+POSTFLOP_ALLINISH_MIN_EQ_BUMP = 0.06
+POSTFLOP_ALLINISH_FLOOR_BUMP = 0.04
+POSTFLOP_EXTREME_SHOVE_FRAC = 1.05  # bet >= pot (pot may be pre-call)
+POSTFLOP_EXTREME_SHOVE_MIN_EQ_BUMP = 0.05
+POSTFLOP_EXTREME_SHOVE_FLOOR_BUMP = 0.03
 
 # Pot-size tightening: large pots on turn/river signal multi-street aggression
 LARGE_POT_THRESHOLD = 40     # pot >= 40 chips
@@ -166,6 +174,12 @@ PREFLOP_ALLIN_EQUITY_PENALTY = 0.05  # extra 5% discount when facing all-in
 
 # Re-raise threshold: when facing a bet, re-raise for value if equity >= this
 RERAISE_EQUITY_THRESHOLD = 0.78
+
+# Facing a small probe (thin bet vs pot): still value-raise with trips+ even when
+# commit_band / straight_dominated / RERAISE_EQUITY_THRESHOLD would force a flat call.
+VALUE_RERAISE_VS_PROBE_MAX_BET_FRAC = 0.22
+VALUE_RERAISE_VS_PROBE_MIN_EQUITY = 0.52  # MC equity can sit low with chops / dominated straight
+VALUE_RERAISE_VS_PROBE_MAX_RANK_CLASS = 6  # trips or better (same as TRIPS_OR_BETTER_RANK_CLASS)
 
 # Value betting: when checked to, bet with medium-strong hands instead of checking
 VALUE_BET_EQUITY = 0.72
@@ -674,6 +688,27 @@ def _is_straight_dominated(observation: dict, hand_rank_class: int | None) -> bo
     return False
 
 
+def _eligible_value_reraise_vs_small_probe(
+    *,
+    street: int,
+    continue_cost: int,
+    pot: int,
+    hand_rank_class: int | None,
+    adj_equity: float,
+) -> bool:
+    """True if we should value-raise vs a small bet with a strong made hand."""
+    if street < 1 or continue_cost <= 0 or pot <= 0:
+        return False
+    if hand_rank_class is None or hand_rank_class > VALUE_RERAISE_VS_PROBE_MAX_RANK_CLASS:
+        return False
+    bet_frac = continue_cost / pot
+    if bet_frac > VALUE_RERAISE_VS_PROBE_MAX_BET_FRAC:
+        return False
+    if adj_equity < VALUE_RERAISE_VS_PROBE_MIN_EQUITY:
+        return False
+    return True
+
+
 def decide_action(
     equity: float,
     observation: dict,
@@ -1097,6 +1132,20 @@ def decide_action(
             raw = int(pot * frac)
             amount = max(min_raise, min(raw, max_raise))
             return (1, amount, 0, 0)
+        if (
+            valid[1]
+            and _eligible_value_reraise_vs_small_probe(
+                street=street,
+                continue_cost=continue_cost,
+                pot=pot,
+                hand_rank_class=hand_rank_class,
+                adj_equity=adj_equity,
+            )
+        ):
+            frac = VALUE_RAISE_FRAC
+            raw = int(pot * frac)
+            amount = max(min_raise, min(raw, max_raise))
+            return (1, amount, 0, 0)
         if valid[3]:
             return (3, 0, 0, 0)
 
@@ -1144,6 +1193,18 @@ def decide_action(
                 can_strong_raise = False
             if straight_dominated:
                 can_strong_raise = False
+        # Value-raise small probes with trips+ even if commit / dominated straight blocked raise.
+        if (
+            continue_cost > 0
+            and _eligible_value_reraise_vs_small_probe(
+                street=street,
+                continue_cost=continue_cost,
+                pot=pot,
+                hand_rank_class=hand_rank_class,
+                adj_equity=adj_equity,
+            )
+        ):
+            can_strong_raise = True
         if can_strong_raise:  # RAISE
             if street == 0:
                 # Preflop: use BB-based sizing instead of pot-fraction
@@ -1176,13 +1237,22 @@ def decide_action(
         call_floor = TURN_MIN_EQUITY_CALL
     else:
         call_floor = MIN_EQUITY_TO_CALL_MARGINAL
-    # Facing a big bet (>=50% pot): demand extra margin
-    if continue_cost > 0 and pot > 0:
+    # Facing a big bet (>=50% pot): demand extra margin (all postflop streets)
+    if continue_cost > 0 and pot > 0 and street >= 1:
         bet_frac = continue_cost / pot
-        if street == 3 and bet_frac >= 0.50:
-            min_equity_to_call += RIVER_BIG_BET_EXTRA_MARGIN
-        elif street == 2 and bet_frac >= 0.50:
-            min_equity_to_call += TURN_BIG_BET_EXTRA_MARGIN
+        if bet_frac >= 0.50:
+            if street == 3:
+                min_equity_to_call += RIVER_BIG_BET_EXTRA_MARGIN
+            elif street == 2:
+                min_equity_to_call += TURN_BIG_BET_EXTRA_MARGIN
+            else:
+                min_equity_to_call += FLOP_BIG_BET_EXTRA_MARGIN
+        if bet_frac >= POSTFLOP_ALLINISH_BET_FRAC:
+            min_equity_to_call += POSTFLOP_ALLINISH_MIN_EQ_BUMP
+            call_floor += POSTFLOP_ALLINISH_FLOOR_BUMP
+        if bet_frac >= POSTFLOP_EXTREME_SHOVE_FRAC:
+            min_equity_to_call += POSTFLOP_EXTREME_SHOVE_MIN_EQ_BUMP
+            call_floor += POSTFLOP_EXTREME_SHOVE_FLOOR_BUMP
     # Commitment tightening: as invested chips rise, avoid thin continues.
     if commit_band == 1:
         call_floor += SOFT_COMMIT_CALL_BUMP
@@ -1354,6 +1424,18 @@ def decide_action(
                     can_reraise = False
                 if straight_dominated:
                     can_reraise = False
+            # Value-raise thin bets with trips+ (overrides commit_band / 78% reraise bar / dominated straight).
+            if (
+                continue_cost > 0
+                and _eligible_value_reraise_vs_small_probe(
+                    street=street,
+                    continue_cost=continue_cost,
+                    pot=pot,
+                    hand_rank_class=hand_rank_class,
+                    adj_equity=adj_equity,
+                )
+            ):
+                can_reraise = True
             if can_reraise:
                 if street == 0:
                     raw = int(2 * PREFLOP_OPEN_RAISE_MULTIPLIER)
@@ -1456,13 +1538,22 @@ def decide_action(
         marginal_floor = TURN_MIN_EQUITY_CALL
     else:
         marginal_floor = MIN_EQUITY_TO_CALL_MARGINAL
-    # Facing a big bet: extra margin
-    if continue_cost > 0 and pot > 0:
+    # Facing a big bet: extra margin (all postflop streets)
+    if continue_cost > 0 and pot > 0 and street >= 1:
         m_bet_frac = continue_cost / pot
-        if street == 3 and m_bet_frac >= 0.50:
-            marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
-        elif street == 2 and m_bet_frac >= 0.50:
-            marginal_min_eq += TURN_BIG_BET_EXTRA_MARGIN
+        if m_bet_frac >= 0.50:
+            if street == 3:
+                marginal_min_eq += RIVER_BIG_BET_EXTRA_MARGIN
+            elif street == 2:
+                marginal_min_eq += TURN_BIG_BET_EXTRA_MARGIN
+            else:
+                marginal_min_eq += FLOP_BIG_BET_EXTRA_MARGIN
+        if m_bet_frac >= POSTFLOP_ALLINISH_BET_FRAC:
+            marginal_min_eq += POSTFLOP_ALLINISH_MIN_EQ_BUMP
+            marginal_floor += POSTFLOP_ALLINISH_FLOOR_BUMP
+        if m_bet_frac >= POSTFLOP_EXTREME_SHOVE_FRAC:
+            marginal_min_eq += POSTFLOP_EXTREME_SHOVE_MIN_EQ_BUMP
+            marginal_floor += POSTFLOP_EXTREME_SHOVE_FLOOR_BUMP
     # Commitment tightening: avoid thin calls when heavily invested.
     if commit_band == 1:
         marginal_floor += SOFT_COMMIT_CALL_BUMP
