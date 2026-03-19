@@ -248,9 +248,9 @@ class PlayerAgent(Agent):
 
         # Base simulation counts (Phase 2: increased for 1000s time bank)
         if street <= 1:
-            base_sims = 450  # Pre-flop/flop
+            base_sims = 600  # Pre-flop/flop
         elif street == 2:
-            base_sims = 550  # Turn
+            base_sims = 750  # Turn
         else:
             base_sims = 850  # River: most critical
 
