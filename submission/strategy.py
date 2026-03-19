@@ -195,6 +195,8 @@ HAND_CLASS_COMMIT_BUMP = 0.08  # extra equity required when exceeding commit gat
 # is low (rank < 7, i.e., below 9), we have a weak flush that loses to
 # better flushes.  Suppress raising and tighten calling.
 NON_NUT_FLUSH_CALL_BUMP = 0.05
+# Opponent discarded a pair → likely kept trips/two pair
+OPP_DISCARDED_PAIR_CALL_BUMP = 0.03
 NON_NUT_FLUSH_RANK_THRESHOLD = 6   # rank_index < 6 (below 8) = non-nut flush
 
 # Straight-dominated: when we hold the low end of a straight on a
@@ -881,7 +883,13 @@ def decide_action(
     # ---- Board texture: flush and paired-board danger in 3-suit deck ----
     flush_danger = _flush_danger(observation) if street >= 1 else 0
     pair_danger = _paired_board_danger(observation) if street >= 1 else 0
-    opp_flush_sig = _opp_flush_signal(observation) if street >= 1 else 0
+    opp_flush_sig = int(_info.get("opp_flush_signal", -1))
+    if opp_flush_sig < 0 and street >= 1:
+        opp_flush_sig = _opp_flush_signal(observation)
+    elif opp_flush_sig < 0:
+        opp_flush_sig = 0
+    opp_discarded_pair = bool(_info.get("opp_discarded_pair", False))
+    opp_likely_has_pair = bool(_info.get("opp_likely_has_pair", False))
     non_nut_flush = _is_non_nut_flush(observation, hand_rank_class) if street >= 1 else False
     straight_dominated = _is_straight_dominated(observation, hand_rank_class) if street >= 1 else False
 
@@ -1155,6 +1163,9 @@ def decide_action(
     elif opp_flush_sig >= 1 and street >= 1 and continue_cost > 0:
         call_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
         min_equity_to_call += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+    if opp_discarded_pair and street >= 1 and continue_cost > 0:
+        call_floor += OPP_DISCARDED_PAIR_CALL_BUMP
+        min_equity_to_call += OPP_DISCARDED_PAIR_CALL_BUMP
     # Invest-then-pressure guard: after multiple raises in-hand, avoid thin continues.
     if street >= 1 and continue_cost > 0 and my_raises_this_hand >= 2:
         call_floor += INVESTED_THEN_PRESSURED_CALL_BUMP
@@ -1436,6 +1447,9 @@ def decide_action(
     elif opp_flush_sig >= 1 and street >= 1 and continue_cost > 0:
         marginal_floor += FLUSH_DANGER_MODERATE_EQUITY_BUMP
         marginal_min_eq += FLUSH_DANGER_MODERATE_EQUITY_BUMP
+    if opp_discarded_pair and street >= 1 and continue_cost > 0:
+        marginal_floor += OPP_DISCARDED_PAIR_CALL_BUMP
+        marginal_min_eq += OPP_DISCARDED_PAIR_CALL_BUMP
     if street >= 1 and continue_cost > 0 and my_raises_this_hand >= 2:
         marginal_floor += INVESTED_THEN_PRESSURED_CALL_BUMP
         marginal_min_eq += INVESTED_THEN_PRESSURED_CALL_BUMP

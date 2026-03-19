@@ -9,8 +9,18 @@ inside the submission/ package.
 from agents.agent import Agent
 from gym_env import PokerEnv
 
-from submission.equity import compute_equity, compute_equity_best2_of5, best_discard, get_hand_rank_class, get_hand_rank_class_partial
+from submission.equity import (
+    compute_equity,
+    compute_equity_best2_of5,
+    compute_equity_vs_flush_draw,
+    compute_equity_vs_board_pair,
+    compute_equity_vs_straight_draw,
+    best_discard,
+    get_hand_rank_class,
+    get_hand_rank_class_partial,
+)
 from submission.opponent_model import OpponentModel
+from submission.opponent_range import analyze_opponent_discards
 from submission.strategy import decide_action
 
 
@@ -277,6 +287,44 @@ class PlayerAgent(Agent):
                 my_discarded=self._my_discarded if self._my_discarded else None,
                 num_simulations=n_sims,
             )
+
+        # Post-flop: discard signals → range-based equity blend
+        if street >= 1 and len(opp_disc) == 3 and len(community) >= 3:
+            sig = analyze_opponent_discards(opp_disc, community)
+            info["opp_flush_signal"] = sig.opp_flush_signal
+            info["opp_discarded_pair"] = sig.opp_discarded_pair
+            info["opp_likely_has_pair"] = sig.opp_likely_has_pair
+            info["opp_straight_signal"] = sig.opp_straight_signal
+            info["opp_kept_high_cards"] = sig.opp_kept_high_cards
+
+            range_sims = min(n_sims // 2, 400)
+            _disc = self._my_discarded if self._my_discarded else None
+
+            # Pick the strongest signal and blend equity against that range.
+            # Only apply one blend to avoid compounding adjustments.
+            if sig.opp_flush_signal >= 2 and sig.flush_suit >= 0:
+                eq_vs_range = compute_equity_vs_flush_draw(
+                    my_cards[:2], community,
+                    flush_suit=sig.flush_suit,
+                    opp_discarded=opp_disc, my_discarded=_disc,
+                    num_simulations=range_sims,
+                )
+                equity = 0.6 * equity + 0.4 * eq_vs_range
+            elif sig.opp_straight_signal >= 2 and sig.straight_helping_ranks:
+                eq_vs_range = compute_equity_vs_straight_draw(
+                    my_cards[:2], community,
+                    straight_ranks=sig.straight_helping_ranks,
+                    opp_discarded=opp_disc, my_discarded=_disc,
+                    num_simulations=range_sims,
+                )
+                equity = 0.6 * equity + 0.4 * eq_vs_range
+            elif sig.opp_likely_has_pair:
+                eq_vs_range = compute_equity_vs_board_pair(
+                    my_cards[:2], community,
+                    opp_discarded=opp_disc, my_discarded=_disc,
+                    num_simulations=range_sims,
+                )
+                equity = 0.7 * equity + 0.3 * eq_vs_range
 
         # Post-flop: evaluate hand strength so we never fold trips+
         hand_rank_class = None

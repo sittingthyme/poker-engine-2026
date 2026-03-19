@@ -205,6 +205,235 @@ def compute_equity(
     return equity
 
 
+def compute_equity_vs_flush_draw(
+    my_cards: list[int],
+    community_cards: list[int],
+    flush_suit: int,
+    opp_discarded: list[int] | None = None,
+    my_discarded: list[int] | None = None,
+    num_simulations: int = 300,
+) -> float:
+    """
+    Equity vs opponent who has 2 cards of flush_suit (flush draw).
+    Used when discard signals indicate opponent likely kept suited cards.
+
+    Parameters
+    ----------
+    my_cards : list[int]
+        Our hole cards (2 cards).
+    community_cards : list[int]
+        Visible board cards.
+    flush_suit : int
+        Suit index (0=d, 1=h, 2=s). Opponent has 2 cards of this suit.
+    opp_discarded, my_discarded : list[int] | None
+        Known discards.
+    num_simulations : int
+        Number of Monte Carlo trials.
+
+    Returns
+    -------
+    float in [0, 1] – estimated win rate vs flush-draw opponent.
+    """
+    if opp_discarded is None:
+        opp_discarded = []
+    if my_discarded is None:
+        my_discarded = []
+
+    known: set[int] = set(my_cards)
+    board: list[int] = []
+    for c in community_cards:
+        if c != -1:
+            known.add(c)
+            board.append(c)
+    for c in opp_discarded:
+        if c != -1:
+            known.add(c)
+    for c in my_discarded:
+        if c != -1:
+            known.add(c)
+
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+    suit_cards = [c for c in range(flush_suit * 9, flush_suit * 9 + 9) if c not in known]
+    board_needed = 5 - len(board)
+
+    if len(suit_cards) < 2 or len(remaining) < 2 + board_needed:
+        return 0.5
+
+    my_treys = [int_to_treys(c) for c in my_cards]
+    wins = 0
+    total = 0
+
+    for _ in range(num_simulations):
+        opp_cards = random.sample(suit_cards, 2)
+        opp_set = set(opp_cards)
+        remaining_for_board = [c for c in remaining if c not in opp_set]
+        if len(remaining_for_board) < board_needed:
+            continue
+        board_completion = random.sample(remaining_for_board, board_needed)
+        full_board = board + board_completion
+
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in full_board]
+
+        my_rank = evaluate_hand(my_treys, board_treys)
+        opp_rank = evaluate_hand(opp_treys, board_treys)
+
+        if my_rank < opp_rank:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
+def compute_equity_vs_board_pair(
+    my_cards: list[int],
+    community_cards: list[int],
+    opp_discarded: list[int] | None = None,
+    my_discarded: list[int] | None = None,
+    num_simulations: int = 300,
+) -> float:
+    """
+    Equity vs opponent who has at least one card matching a board rank.
+    Used when discard signals indicate opponent likely paired the board.
+
+    Sampling: pick one card from remaining board-rank cards, then one
+    from the rest of the deck.
+    """
+    if opp_discarded is None:
+        opp_discarded = []
+    if my_discarded is None:
+        my_discarded = []
+
+    known: set[int] = set(my_cards)
+    board: list[int] = []
+    for c in community_cards:
+        if c != -1:
+            known.add(c)
+            board.append(c)
+    for c in opp_discarded:
+        if c != -1:
+            known.add(c)
+    for c in my_discarded:
+        if c != -1:
+            known.add(c)
+
+    board_ranks = {c % 9 for c in board}
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+    board_rank_cards = [c for c in remaining if c % 9 in board_ranks]
+    other_cards = [c for c in remaining if c % 9 not in board_ranks]
+    board_needed = 5 - len(board)
+
+    if not board_rank_cards or len(remaining) < 2 + board_needed:
+        return 0.5
+
+    my_treys = [int_to_treys(c) for c in my_cards]
+    wins = 0
+    total = 0
+
+    for _ in range(num_simulations):
+        c1 = random.choice(board_rank_cards)
+        pool = [c for c in remaining if c != c1]
+        if not pool:
+            continue
+        c2 = random.choice(pool)
+        opp_cards = [c1, c2]
+        opp_set = set(opp_cards)
+        remaining_for_board = [c for c in remaining if c not in opp_set]
+        if len(remaining_for_board) < board_needed:
+            continue
+        board_completion = random.sample(remaining_for_board, board_needed)
+        full_board = board + board_completion
+
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in full_board]
+
+        my_rank = evaluate_hand(my_treys, board_treys)
+        opp_rank = evaluate_hand(opp_treys, board_treys)
+
+        if my_rank < opp_rank:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
+def compute_equity_vs_straight_draw(
+    my_cards: list[int],
+    community_cards: list[int],
+    straight_ranks: set[int],
+    opp_discarded: list[int] | None = None,
+    my_discarded: list[int] | None = None,
+    num_simulations: int = 300,
+) -> float:
+    """
+    Equity vs opponent who has at least one card in straight_ranks.
+    Used when discard signals indicate opponent likely kept straight connectors.
+
+    Sampling: pick one card from remaining straight-rank cards, then one
+    from the rest of the deck.
+    """
+    if opp_discarded is None:
+        opp_discarded = []
+    if my_discarded is None:
+        my_discarded = []
+
+    known: set[int] = set(my_cards)
+    board: list[int] = []
+    for c in community_cards:
+        if c != -1:
+            known.add(c)
+            board.append(c)
+    for c in opp_discarded:
+        if c != -1:
+            known.add(c)
+    for c in my_discarded:
+        if c != -1:
+            known.add(c)
+
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+    straight_cards = [c for c in remaining if c % 9 in straight_ranks]
+    board_needed = 5 - len(board)
+
+    if not straight_cards or len(remaining) < 2 + board_needed:
+        return 0.5
+
+    my_treys = [int_to_treys(c) for c in my_cards]
+    wins = 0
+    total = 0
+
+    for _ in range(num_simulations):
+        c1 = random.choice(straight_cards)
+        pool = [c for c in remaining if c != c1]
+        if not pool:
+            continue
+        c2 = random.choice(pool)
+        opp_cards = [c1, c2]
+        opp_set = set(opp_cards)
+        remaining_for_board = [c for c in remaining if c not in opp_set]
+        if len(remaining_for_board) < board_needed:
+            continue
+        board_completion = random.sample(remaining_for_board, board_needed)
+        full_board = board + board_completion
+
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in full_board]
+
+        my_rank = evaluate_hand(my_treys, board_treys)
+        opp_rank = evaluate_hand(opp_treys, board_treys)
+
+        if my_rank < opp_rank:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
 def compute_equity_best2_of5(
     five_cards: list[int],
     num_simulations: int = 300,
@@ -258,6 +487,35 @@ def compute_equity_best2_of5(
 
 def _rank_index(card_int: int) -> int:
     return card_int % len(RANKS)
+
+
+def _get_suit(card_int: int) -> int:
+    return card_int // len(RANKS)
+
+
+def _flush_draw_strength(keep: list[int], board: list[int]) -> tuple[int, bool]:
+    """
+    In a 27-card deck (9 per suit), flush potential from keep + board.
+    Returns (base_strength, is_double_suited):
+      base: 0 = none, 1 = 3 of suit, 2 = 4 of suit, 3 = made flush
+      is_double_suited: both keep cards are in the flush suit
+    """
+    suits = [_get_suit(c) for c in (keep + board)]
+    if not suits:
+        return 0, False
+    best_suit = max(set(suits), key=lambda s: suits.count(s))
+    max_count = suits.count(best_suit)
+    base = 0
+    if max_count >= 5:
+        base = 3
+    elif max_count >= 4:
+        base = 2
+    elif max_count >= 3:
+        base = 1
+
+    keep_suits = [_get_suit(c) for c in keep]
+    is_double = base >= 1 and len(keep) == 2 and keep_suits[0] == best_suit and keep_suits[1] == best_suit
+    return base, is_double
 
 
 def _straight_draw_strength_with_board(keep: list[int], board: list[int]) -> int:
@@ -373,6 +631,11 @@ def _keep_rank_key(keep: list[int]) -> tuple[int, int]:
 # Nut-fraction bonus: when two keeps have close equity, prefer the one
 # whose wins come more often from flushes or better (nut potential).
 NUT_FRAC_BONUS = 0.04  # effective equity bonus per 100% nut fraction
+# Flush-draw bonus: prefer keeps with flush draws when equity is close.
+# In a 3-suit deck, flush draws are valuable; Monte Carlo variance can
+# miss this with limited sims.
+FLUSH_DRAW_BONUS = 0.02  # per level (1=3 of suit, 2=4 of suit, 3=made)
+DOUBLE_SUITED_BONUS = 0.04  # extra when both keep cards are in the flush suit
 
 def best_discard(
     hole_cards: list[int],
@@ -393,6 +656,7 @@ def best_discard(
     best_score = -1.0
     best_eq = -1.0
     best_rank_key = (-1, -1)
+    board = [c for c in community_cards if c != -1]
 
     for i in range(5):
         for j in range(i + 1, 5):
@@ -406,7 +670,9 @@ def best_discard(
                 num_simulations=sims_per_pair,
                 return_nut_fraction=True,
             )
-            score = eq + NUT_FRAC_BONUS * nut_frac
+            flush_base, is_double_suited = _flush_draw_strength(keep, board)
+            flush_bonus = FLUSH_DRAW_BONUS * flush_base + (DOUBLE_SUITED_BONUS if is_double_suited else 0)
+            score = eq + NUT_FRAC_BONUS * nut_frac + flush_bonus
             rank_key = _keep_rank_key(keep)
 
             if score > best_score + 0.01:
