@@ -223,6 +223,8 @@ class PlayerAgent(Agent):
             info["opp_high_commit_pressure_density"] = float(sum(hw) / len(hw))
         else:
             info["opp_high_commit_pressure_density"] = 0.0
+        info["opp_phase"] = self.opp_model.opponent_phase()
+        info["opp_recent_preflop_fold_rate"] = self.opp_model.recent_preflop_fold_rate()
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
         opp_disc = [c for c in obs.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
