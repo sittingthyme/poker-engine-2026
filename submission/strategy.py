@@ -144,13 +144,6 @@ PREFLOP_3BET_MULTIPLIER = 2.5        # 3-bet to 2.5x the incoming raise (down fr
 PREFLOP_3BET_CALL_MIN_EQUITY = 0.62  # need 62%+ equity to call a 3-bet
 PREFLOP_4BET_MIN_EQUITY = 0.80       # need 80%+ equity to 4-bet (very premium only)
 
-# Large preflop raise adjustment: big raises imply stronger opponent ranges,
-# so raw equity (vs random) overestimates our chances.  Apply a linear penalty.
-PREFLOP_BIG_RAISE_THRESHOLD = 20     # start adjusting above this opp_bet
-PREFLOP_BIG_RAISE_MAX_PENALTY = 0.10 # max equity discount at all-in (opp_bet=100)
-PREFLOP_ALLIN_THRESHOLD = 80         # near all-in: extra call-floor tightening
-PREFLOP_ALLIN_CALL_BUMP = 0.03       # extra call-floor bump for near all-in
-
 # Re-raise threshold: when facing a bet, re-raise for value if equity >= this
 RERAISE_EQUITY_THRESHOLD = 0.78
 
@@ -694,18 +687,6 @@ def decide_action(
     # Cost to continue (computed early for preflop cap check)
     continue_cost = opp_bet - my_bet
 
-    # Raise-size equity adjustment: large preflop raises imply stronger ranges,
-    # so raw equity (vs random) overestimates our true win-rate.  Apply a linear
-    # penalty that grows from 0 at opp_bet=20 to ~10% at opp_bet=100.
-    if street == 0 and continue_cost > 0 and opp_bet >= PREFLOP_BIG_RAISE_THRESHOLD:
-        big_raise_penalty = min(
-            PREFLOP_BIG_RAISE_MAX_PENALTY,
-            (opp_bet - PREFLOP_BIG_RAISE_THRESHOLD)
-            * PREFLOP_BIG_RAISE_MAX_PENALTY
-            / (100 - PREFLOP_BIG_RAISE_THRESHOLD),
-        )
-        equity -= big_raise_penalty
-
     # Preflop escalation cap: stop re-raising when already committed heavily
     # unless we have premium equity.  Just call to see a flop.
     if street == 0 and continue_cost > 0 and my_bet >= PREFLOP_RERAISE_CAP and equity < PREFLOP_PREMIUM_EQUITY:
@@ -731,8 +712,6 @@ def decide_action(
             preflop_call_floor += LOSS_PRESSURE_MILD_CALL_BUMP
         elif loss_pressure >= 2:
             preflop_call_floor += LOSS_PRESSURE_SEVERE_CALL_BUMP
-        if opp_bet >= PREFLOP_ALLIN_THRESHOLD:
-            preflop_call_floor += PREFLOP_ALLIN_CALL_BUMP
         if equity < preflop_call_floor:
             if valid[0]:
                 return (0, 0, 0, 0)  # FOLD — not strong enough vs a real raise
