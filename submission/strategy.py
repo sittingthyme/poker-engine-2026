@@ -141,14 +141,20 @@ PREFLOP_OPEN_RAISE_MULTIPLIER = 3.5  # raise to 3.5x BB = 7 chips (top bots use 
 PREFLOP_3BET_MULTIPLIER = 2.5        # 3-bet to 2.5x the incoming raise (down from 3.0)
 
 # Facing a 3-bet: tighter ranges to avoid bloated pots with marginal hands
-PREFLOP_3BET_CALL_MIN_EQUITY = 0.55  # need 62%+ equity to call a 3-bet
+PREFLOP_3BET_CALL_MIN_EQUITY = 0.58  # min equity to call a real preflop raise / 3-bet line
 PREFLOP_4BET_MIN_EQUITY = 0.80       # need 80%+ equity to 4-bet (very premium only)
 
 # Raise-size equity penalty: large raises imply stronger opponent ranges.
 PREFLOP_BIG_RAISE_THRESHOLD = 6      # start adjusting above any real raise
 PREFLOP_BIG_RAISE_MAX_PENALTY = 0.12 # max equity discount at all-in
-# Steeper curve so opp_bet=14 gets ~3.2%, opp_bet=21 gets ~6%
-PREFLOP_RAISE_PENALTY_PER_CHIP = 0.004  # penalty = min(max, this * (opp_bet - threshold))
+# Steeper per-chip curve (was 0.004): SB opens to 8+ hurt more.
+PREFLOP_RAISE_PENALTY_PER_CHIP = 0.006  # penalty = min(max, this * (opp_bet - threshold))
+# Extra discount when opponent puts in a large preflop open (e.g. SB → 8).
+PREFLOP_LARGE_OPEN_EXTRA = 0.03
+PREFLOP_LARGE_OPEN_BET = 8
+# Extra floors vs large opens (on top of PREFLOP_3BET_CALL_MIN_EQUITY bumps).
+PREFLOP_LARGE_OPEN_CALL_FLOOR_BUMP = 0.025
+PREFLOP_LARGE_OPEN_DEFEND_FLOOR_BUMP = 0.03
 
 # Extra penalty when BB facing a large SB open-raise (we didn't raise, they did).
 PREFLOP_BB_OPEN_RAISE_THRESHOLD = 10  # opp_bet >= this
@@ -189,6 +195,11 @@ MAX_CALL_FLOOR_BUMP = 0.15
 # if we have ANY reasonable hand. Prevents invest-then-fold for trivial amounts.
 TINY_BET_POT_FRAC = 0.15       # bet < 15% of pot = trivially small
 TINY_BET_MAX_EQUITY_REQ = 0.35  # need only 35% equity to call a tiny bet
+
+# Min-raise stabs (e.g. 2 chips): pot-fraction rule can miss these on small pots.
+# Postflop only — don't fold decent equity to a trivial price.
+MICRO_BET_MAX_CONTINUE = 6
+MICRO_BET_MAX_EQUITY_REQ = 0.40  # "decent" hand vs a 2-chip stab
 
 # Pot-odds override: on flop/turn, call when equity beats pot odds even if
 # below the 55% marginal floor (fixes folding pair+draw, flush draws with good odds).
@@ -742,6 +753,8 @@ def decide_action(
             PREFLOP_RAISE_PENALTY_PER_CHIP * (opp_bet - PREFLOP_BIG_RAISE_THRESHOLD),
         )
         equity -= size_penalty
+        if opp_bet >= PREFLOP_LARGE_OPEN_BET:
+            equity -= PREFLOP_LARGE_OPEN_EXTRA
         # Extra penalty when BB facing a large SB open-raise (we didn't raise).
         blind_pos = observation.get("blind_position", blind_position_from_obs(observation))
         if (
@@ -778,6 +791,9 @@ def decide_action(
             preflop_call_floor += LOSS_PRESSURE_MILD_CALL_BUMP
         elif loss_pressure >= 2:
             preflop_call_floor += LOSS_PRESSURE_SEVERE_CALL_BUMP
+        if opp_bet >= PREFLOP_LARGE_OPEN_BET:
+            preflop_call_floor += PREFLOP_LARGE_OPEN_CALL_FLOOR_BUMP
+            preflop_4bet_floor += 0.02
         if equity < preflop_call_floor:
             if valid[0]:
                 return (0, 0, 0, 0)  # FOLD — not strong enough vs a real raise
@@ -796,6 +812,8 @@ def decide_action(
             preflop_defend_floor += 0.04
         if opp_postflop_pressure >= 1:
             preflop_defend_floor += 0.02
+        if opp_bet >= PREFLOP_LARGE_OPEN_BET:
+            preflop_defend_floor += PREFLOP_LARGE_OPEN_DEFEND_FLOOR_BUMP
         if equity < preflop_defend_floor and valid[0]:
             return (0, 0, 0, 0)
 
@@ -1292,6 +1310,10 @@ def decide_action(
         if bet_frac_vs_pot < TINY_BET_POT_FRAC:
             call_floor = min(call_floor, TINY_BET_MAX_EQUITY_REQ)
             min_equity_to_call = min(min_equity_to_call, TINY_BET_MAX_EQUITY_REQ)
+        elif street >= 1 and continue_cost <= MICRO_BET_MAX_CONTINUE:
+            # Opponent clicked min (e.g. 2): don't demand turn/river 58%+ to continue
+            call_floor = min(call_floor, MICRO_BET_MAX_EQUITY_REQ)
+            min_equity_to_call = min(min_equity_to_call, MICRO_BET_MAX_EQUITY_REQ)
 
     if adj_equity >= effective_medium:
         action = (0, 0, 0, 0)
@@ -1574,6 +1596,9 @@ def decide_action(
         if m_bet_frac_vs_pot < TINY_BET_POT_FRAC:
             marginal_floor = min(marginal_floor, TINY_BET_MAX_EQUITY_REQ)
             marginal_min_eq = min(marginal_min_eq, TINY_BET_MAX_EQUITY_REQ)
+        elif street >= 1 and continue_cost <= MICRO_BET_MAX_CONTINUE:
+            marginal_floor = min(marginal_floor, MICRO_BET_MAX_EQUITY_REQ)
+            marginal_min_eq = min(marginal_min_eq, MICRO_BET_MAX_EQUITY_REQ)
 
     # --- Pot-odds override: call when equity beats pot odds even if below floor ---
     # if (

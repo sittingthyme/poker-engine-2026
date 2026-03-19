@@ -12,6 +12,7 @@ from gym_env import PokerEnv
 from submission.equity import (
     compute_equity,
     compute_equity_best2_of5,
+    compute_equity_best2_of5_vs_raise_shape,
     compute_equity_vs_flush_draw,
     compute_equity_vs_board_pair,
     compute_equity_vs_straight_draw,
@@ -21,7 +22,7 @@ from submission.equity import (
 )
 from submission.opponent_model import OpponentModel
 from submission.opponent_range import analyze_opponent_discards
-from submission.strategy import decide_action
+from submission.strategy import MIN_HANDS_FOR_ADAPT, decide_action
 
 
 class PlayerAgent(Agent):
@@ -279,6 +280,28 @@ class PlayerAgent(Agent):
         # Preflop: use best 2 of 5 equity; post-flop: use our 2 kept cards
         if street == 0 and len(my_cards) == 5:
             equity = compute_equity_best2_of5(my_cards, num_simulations=n_sims)
+            # Facing a real raise: blend with equity vs a plausible raising range
+            # (uniform random villain massively over-calls weak 5-card bundles).
+            my_bet = obs.get("my_bet", 0)
+            opp_bet = obs.get("opp_bet", 0)
+            if opp_bet > my_bet and opp_bet > 2:
+                eq_raise = compute_equity_best2_of5_vs_raise_shape(
+                    my_cards, num_simulations=n_sims
+                )
+                w = 0.55
+                adapted = self.opp_model.hands_seen >= MIN_HANDS_FOR_ADAPT
+                if adapted:
+                    if self.opp_model.is_tight():
+                        w += 0.10
+                    elif self.opp_model.is_loose():
+                        w -= 0.08
+                    sb0 = self.opp_model.streets[0]
+                    if sb0.raises >= 8 and sb0.actions > 0:
+                        rr = sb0.raises / sb0.actions
+                        if rr > 0.35:
+                            w += 0.05
+                w = max(0.40, min(0.72, w))
+                equity = (1.0 - w) * equity + w * eq_raise
         else:
             equity = compute_equity(
                 my_cards[:2],

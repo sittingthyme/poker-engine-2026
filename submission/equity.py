@@ -485,6 +485,76 @@ def compute_equity_best2_of5(
     return wins / total
 
 
+def _plausible_preflop_raise_hand(c1: int, c2: int) -> bool:
+    """
+    Crude filter: hands that often open/raise in short-deck HU (not full GTO).
+
+    Keeps pairs, suited cards, or at least one high card (6+ in 23456789A).
+    """
+    r1, r2 = c1 % len(RANKS), c2 % len(RANKS)
+    s1, s2 = c1 // len(RANKS), c2 // len(RANKS)
+    if r1 == r2:
+        return True
+    if s1 == s2:
+        return True
+    if max(r1, r2) >= 4:  # 6 or better
+        return True
+    return False
+
+
+def compute_equity_best2_of5_vs_raise_shape(
+    five_cards: list[int],
+    num_simulations: int = 300,
+    *,
+    max_resample: int = 35,
+) -> float:
+    """
+    Like compute_equity_best2_of5, but the opponent's two cards are drawn from a
+    biased distribution: only hands that pass _plausible_preflop_raise_hand,
+    with rejection sampling (falls back to uniform if sampling fails).
+
+    Use when facing a preflop raise: raw best-2-of-5 vs uniform villain
+    overestimates how often we are ahead.
+    """
+    if len(five_cards) != 5:
+        return 0.5
+    known = set(five_cards)
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+    if len(remaining) < 7:
+        return 0.5
+    treys_5 = [int_to_treys(c) for c in five_cards]
+    pairs = [(i, j) for i in range(5) for j in range(i + 1, 5)]
+    wins = 0
+    total = 0
+    for _ in range(num_simulations):
+        rest = list(remaining)
+        opp_cards: list[int] | None = None
+        board_sample: list[int] = []
+        for _try in range(max_resample):
+            cand = random.sample(rest, 7)
+            o0, o1 = cand[0], cand[1]
+            if _plausible_preflop_raise_hand(o0, o1):
+                opp_cards = [o0, o1]
+                board_sample = cand[2:]
+                break
+        if opp_cards is None:
+            cand = random.sample(rest, 7)
+            opp_cards = cand[:2]
+            board_sample = cand[2:]
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in board_sample]
+        opp_rank = evaluate_hand(opp_treys, board_treys)
+        best_my_rank = min(
+            evaluate_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
+        )
+        if best_my_rank < opp_rank:
+            wins += 1
+        total += 1
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
 def _rank_index(card_int: int) -> int:
     return card_int % len(RANKS)
 
