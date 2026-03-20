@@ -13,6 +13,7 @@ from submission.equity import (
     compute_equity,
     compute_equity_best2_of5,
     compute_equity_best2_of5_vs_raise_shape,
+    compute_equity_best2_of5_vs_shove_top15,
     compute_equity_vs_flush_draw,
     compute_equity_vs_board_pair,
     compute_equity_vs_straight_draw,
@@ -21,8 +22,8 @@ from submission.equity import (
     get_hand_rank_class_partial,
 )
 from submission.opponent_model import OpponentModel
-from submission.opponent_range import analyze_opponent_discards
-from submission.strategy import MIN_HANDS_FOR_ADAPT, decide_action
+from submission.opponent_range import OpponentRangeModel, analyze_opponent_discards
+from submission.strategy import MIN_HANDS_FOR_ADAPT, PREFLOP_SHOVE_POT_ODDS_MIN_BET, decide_action
 
 
 class PlayerAgent(Agent):
@@ -32,6 +33,8 @@ class PlayerAgent(Agent):
 
         # Persistent across the entire 1000-hand match
         self.opp_model = OpponentModel()
+        self.opp_range = OpponentRangeModel()
+        self._preflop_opp_max_bet: int = 0
 
         # Per-hand bookkeeping
         self._current_hand: int | None = None
@@ -87,6 +90,8 @@ class PlayerAgent(Agent):
             self._my_raises_this_hand = 0
             self._hand_start_bankroll = self._my_cumulative_reward
             self.opp_model.new_hand()
+            self.opp_range.new_hand()
+            self._preflop_opp_max_bet = 0
             # Detect blind position from the first observation of the hand.
             # Street 0 start: SB posts 1, BB posts 2.
             my_bet = observation.get("my_bet", 0)
@@ -107,6 +112,12 @@ class PlayerAgent(Agent):
             "blind_position", self._blind_position
         )
 
+        if observation.get("street", 0) == 0:
+            self._preflop_opp_max_bet = max(
+                self._preflop_opp_max_bet,
+                int(observation.get("opp_bet", 0)),
+            )
+
         valid = observation["valid_actions"]
 
         # ---- Discard phase (mandatory on flop) ----
@@ -126,6 +137,11 @@ class PlayerAgent(Agent):
         opp_action_name = observation.get("opp_last_action", "None")
         if opp_action_name not in ("None", None):
             street = observation.get("street", 0)
+            if street == 0:
+                self._preflop_opp_max_bet = max(
+                    self._preflop_opp_max_bet,
+                    int(observation.get("opp_bet", 0)),
+                )
             # We don't know the exact raise amount from observe; approximate
             raise_amt = max(0, observation.get("opp_bet", 0) - observation.get("my_bet", 0))
             pot_size = observation.get("pot_size", observation.get("my_bet", 0) + observation.get("opp_bet", 0))
@@ -154,11 +170,31 @@ class PlayerAgent(Agent):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _preflop_action_strength(self) -> float:
+        """[0, 1] — higher when opponent put in larger pre-flop bets (opens / 3-bets / jams)."""
+        m = self._preflop_opp_max_bet
+        if m <= 2:
+            return 0.48
+        if m <= 4:
+            return 0.55
+        if m <= 8:
+            return 0.62
+        if m <= 14:
+            return 0.72
+        if m <= 24:
+            return 0.82
+        return 0.90
+
     def _do_discard(self, obs) -> tuple[int, int, int, int]:
         """Pick the best 2 cards to keep from 5 hole cards with time-aware scaling."""
         my_cards = [c for c in obs["my_cards"] if c != -1]
         community = [c for c in obs["community_cards"] if c != -1]
         opp_disc = [c for c in obs.get("opp_discarded_cards", [-1, -1, -1]) if c != -1]
+        if len(opp_disc) == 3:
+            self.opp_range.update_from_discards(
+                opp_disc,
+                preflop_action_strength=self._preflop_action_strength(),
+            )
 
         # Time-aware scaling for discard phase
         time_left = obs.get("time_left", 500.0)
@@ -246,77 +282,79 @@ class PlayerAgent(Agent):
         time_limit = total if total > 0 else 1000.0  # Phase 2 default
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
-        # Base simulation counts (Phase 2: increased for 1000s time bank)
-        if street <= 1:
-            base_sims = 600  # Pre-flop/flop
-        elif street == 2:
-            base_sims = 700  # Turn
+        # Critical time guard: never burn the clock on heavy MC (forfeit protection).
+        if time_ratio < 0.10:
+            n_sims = 50
         else:
-            base_sims = 850  # River: most critical
+            # Base simulation counts (Phase 2: increased for 1000s time bank)
+            if street <= 1:
+                base_sims = 450  # Pre-flop/flop
+            elif street == 2:
+                base_sims = 550  # Turn
+            else:
+                base_sims = 850  # River: most critical
 
-        # Scale by pot size importance (larger pots = more important decisions)
-        # Pot size typically ranges from 2-200+ chips
-        pot_multiplier = 1.0 + min(0.5, (pot - 2) / 200.0)  # 1.0 to 1.5x based on pot size
+            # Scale by pot size importance (larger pots = more important decisions)
+            # Pot size typically ranges from 2-200+ chips
+            pot_multiplier = 1.0 + min(0.5, (pot - 2) / 200.0)  # 1.0 to 1.5x based on pot size
 
-        # Time-aware scaling: reduce simulations when time is running low
-        if time_ratio < 0.30:
-            # Critical: less than 30% time remaining
-            time_multiplier = 0.5  # Cut simulations in half
-        elif time_ratio < 0.50:
-            # Warning: less than 50% time remaining
-            time_multiplier = 0.7  # Reduce by 30%
-        elif time_ratio < 0.70:
-            # Caution: less than 70% time remaining
-            time_multiplier = 0.85  # Reduce by 15%
-        else:
-            # Safe: plenty of time remaining
-            time_multiplier = 1.0
+            # Time-aware scaling: reduce simulations when time is running low
+            if time_ratio < 0.30:
+                time_multiplier = 0.5
+            elif time_ratio < 0.50:
+                time_multiplier = 0.7
+            elif time_ratio < 0.70:
+                time_multiplier = 0.85
+            else:
+                time_multiplier = 1.0
 
-        # Calculate final simulation count
-        n_sims = int(base_sims * pot_multiplier * time_multiplier)
-        # Ensure minimum of 100 sims for reasonable accuracy
-        n_sims = max(100, min(n_sims, 1200))  # Phase 2: cap at 1200
+            n_sims = int(base_sims * pot_multiplier * time_multiplier)
+            n_sims = max(100, min(n_sims, 1200))
 
         # Preflop: use best 2 of 5 equity; post-flop: use our 2 kept cards
         if street == 0 and len(my_cards) == 5:
-            equity = compute_equity_best2_of5(my_cards, num_simulations=n_sims)
-            # Facing a real raise: blend with equity vs a plausible raising range
-            # (uniform random villain massively over-calls weak 5-card bundles).
+            # Cached 450-sim preflop equity (no live MC on every decision).
+            equity = compute_equity_best2_of5(my_cards, num_simulations=450)
             my_bet = obs.get("my_bet", 0)
             opp_bet = obs.get("opp_bet", 0)
-            # Only blend vs a real raise (opp beyond BB). SB paying 1 chip to complete
-            # (my_bet=1, opp_bet=2) is not a raise — blending inflated equity and caused
-            # constant SB raises / no folds in logs.
+            if opp_bet > my_bet and opp_bet >= PREFLOP_SHOVE_POT_ODDS_MIN_BET:
+                info["preflop_equity_vs_shove"] = compute_equity_best2_of5_vs_shove_top15(
+                    my_cards, num_simulations=min(n_sims, 300)
+                )
+            # Facing a real raise: blend with equity vs a plausible raising range
+            # (uniform random villain massively over-calls weak 5-card bundles).
             if opp_bet > my_bet and opp_bet > 2:
                 eq_raise = compute_equity_best2_of5_vs_raise_shape(
-                    my_cards, num_simulations=n_sims
+                    my_cards, num_simulations=min(n_sims, 450)
                 )
-                w = 0.60
+                w = 0.55
                 adapted = self.opp_model.hands_seen >= MIN_HANDS_FOR_ADAPT
                 if adapted:
                     if self.opp_model.is_tight():
-                        w += 0.08
+                        w += 0.10
                     elif self.opp_model.is_loose():
-                        w -= 0.05
+                        w -= 0.08
                     sb0 = self.opp_model.streets[0]
                     if sb0.raises >= 8 and sb0.actions > 0:
                         rr = sb0.raises / sb0.actions
-                        if rr > 0.30:
+                        if rr > 0.35:
                             w += 0.05
                 w = max(0.40, min(0.72, w))
                 equity = (1.0 - w) * equity + w * eq_raise
-
         else:
-            # Post-flop (or non–5-card preflop): base equity on kept hole cards vs random villain
-            _md = self._my_discarded if self._my_discarded else None
+            range_bias = 0.0
+            if self.opp_model.hands_seen >= MIN_HANDS_FOR_ADAPT:
+                sb = self.opp_model.streets[min(street, 3)]
+                if sb.actions >= 6:
+                    range_bias = min(0.82, 0.12 + 0.75 * sb.raise_rate)
             equity = compute_equity(
                 my_cards[:2],
                 community,
                 opp_discarded=opp_disc if opp_disc else None,
-                my_discarded=_md,
+                my_discarded=self._my_discarded if self._my_discarded else None,
                 num_simulations=n_sims,
+                opponent_range_bias=range_bias,
             )
-
 
         # Post-flop: discard signals → range-based equity blend
         if street >= 1 and len(opp_disc) == 3 and len(community) >= 3:

@@ -7,6 +7,7 @@ opponent discards, own discards).
 """
 
 import random
+from functools import lru_cache
 from treys import Card, Evaluator
 
 # ---------------------------------------------------------------------------
@@ -36,17 +37,58 @@ def _ace_to_ten(treys_card: int) -> int:
 # Singleton evaluator -- constructed once, reused everywhere
 _evaluator = Evaluator()
 
+# Tournament hand-type order (docs/rules.md): SF > FH > Flush > Straight > Trips > 2P > Pair > High.
+# Treys rank_class uses the same relative ordering for these (quads class 2 is impossible here).
+# Composite key makes category dominate treys' 52-card absolute rank table when comparing hands.
+_TOURNAMENT_TIER_FROM_TREYS_CLASS: dict[int, int] = {
+    1: 1,  # straight flush
+    2: 2,  # quads — impossible in 27-card; keep slot if treys ever returns it
+    3: 2,  # full house
+    4: 3,  # flush
+    5: 4,  # straight
+    6: 5,  # three of a kind
+    7: 6,  # two pair
+    8: 7,  # pair
+    9: 8,  # high card
+}
 
-def evaluate_hand(hand_treys: list[int], board_treys: list[int]) -> int:
-    """
-    Evaluate a hand (2 cards) + board (5 cards) using the tournament's
-    Ace-can-be-high (above 9) rule.  Lower score = better hand.
-    """
+
+def _treys_raw_score(hand_treys: list[int], board_treys: list[int]) -> int:
+    """Treys 5-card rank id (Ace straight aware). Valid input to Evaluator.get_rank_class."""
     reg = _evaluator.evaluate(hand_treys, board_treys)
     alt_hand = list(map(_ace_to_ten, hand_treys))
     alt_board = list(map(_ace_to_ten, board_treys))
     alt = _evaluator.evaluate(alt_hand, alt_board)
     return min(reg, alt)
+
+
+def evaluate_short_deck_hand(hand_treys: list[int], board_treys: list[int]) -> int:
+    """
+    27-card tournament evaluation: Ace high/low straight handling + category-first ordering.
+
+    Treys' raw scores are tuned for 52-card frequencies; we combine ``rank_class`` tier
+    (per official hand ranking) with raw score so cross-category comparisons match the
+    engine (see ``docs/rules.md`` Hand Rankings).
+
+    **Not** a treys hand-rank id — use :func:`evaluate_hand` / :func:`_treys_raw_score`
+    for :meth:`Evaluator.get_rank_class`.
+    """
+    raw = _treys_raw_score(hand_treys, board_treys)
+    rc = _evaluator.get_rank_class(raw)
+    tier = _TOURNAMENT_TIER_FROM_TREYS_CLASS.get(rc, rc)
+    # Lower return value = better hand (same convention as treys raw).
+    return tier * 100_000 + raw
+
+
+def evaluate_hand(hand_treys: list[int], board_treys: list[int]) -> int:
+    """
+    Treys raw hand strength (lower = better). Ace-can-be-high (above 9) rule.
+
+    Use this with ``Evaluator.get_rank_class`` and APIs that expect treys rank ids.
+    For comparing two showdown hands under tournament category order, use
+    :func:`evaluate_short_deck_hand` instead.
+    """
+    return _treys_raw_score(hand_treys, board_treys)
 
 
 def get_hand_rank_class(hole_cards: list[int], community_cards: list[int]) -> int:
@@ -84,6 +126,45 @@ def get_hand_rank_class_partial(hole_cards: list[int], community_cards: list[int
     return _evaluator.get_rank_class(rank)
 
 
+def _plausible_preflop_raise_hand(c1: int, c2: int) -> bool:
+    """
+    Crude filter: hands that often open/raise in short-deck HU (not full GTO).
+
+    Keeps pairs, suited cards, or at least one high card (6+ in 23456789A).
+    """
+    r1, r2 = c1 % len(RANKS), c2 % len(RANKS)
+    s1, s2 = c1 // len(RANKS), c2 // len(RANKS)
+    if r1 == r2:
+        return True
+    if s1 == s2:
+        return True
+    if max(r1, r2) >= 4:  # 6 or better
+        return True
+    return False
+
+
+def _strong_preflop_raise_hand(c1: int, c2: int) -> bool:
+    """Tighter range for heavy aggression (e.g. 3-bet lines)."""
+    r1, r2 = c1 % len(RANKS), c2 % len(RANKS)
+    s1, s2 = c1 // len(RANKS), c2 // len(RANKS)
+    if r1 == r2:
+        return r1 >= 2  # 4+ pair
+    if s1 == s2:
+        return max(r1, r2) >= 4  # 6+ with suited
+    return max(r1, r2) >= 5  # 7+ offsuit
+
+
+def _shove_top15_preflop_hand(c1: int, c2: int) -> bool:
+    """Approximate top ~15% of HU shoving hands (pairs, strong broadways)."""
+    r1, r2 = c1 % len(RANKS), c2 % len(RANKS)
+    s1, s2 = c1 // len(RANKS), c2 // len(RANKS)
+    if r1 == r2:
+        return r1 >= 3  # 55+
+    if s1 == s2:
+        return max(r1, r2) >= 5  # 7+ suited
+    return max(r1, r2) >= 6  # 8+ offsuit
+
+
 # ---------------------------------------------------------------------------
 # Core equity function
 # ---------------------------------------------------------------------------
@@ -95,6 +176,8 @@ def compute_equity(
     my_discarded: list[int] | None = None,
     num_simulations: int = 300,
     return_nut_fraction: bool = False,
+    *,
+    opponent_range_bias: float = 0.0,
 ) -> float | tuple[float, float]:
     """
     Monte Carlo equity (win-rate) for *my_cards* vs a random opponent.
@@ -115,6 +198,9 @@ def compute_equity(
         If True, also return the fraction of wins that came from
         flush or better (rank_class <= 4).  Used by discard logic
         to prefer keeps with higher nut potential.
+    opponent_range_bias : float
+        In [0, 1]. Fraction of trials where the opponent's two cards are drawn
+        from a plausible/strong raising range (vs uniform dead cards).
 
     Returns
     -------
@@ -158,21 +244,37 @@ def compute_equity(
     nut_wins = 0
     total = 0
 
+    bias = max(0.0, min(1.0, opponent_range_bias))
+    use_strong = bias >= 0.55
+    hand_fn = _strong_preflop_raise_hand if use_strong else _plausible_preflop_raise_hand
+
     for _ in range(num_simulations):
-        sample = random.sample(remaining, sample_size)
-        opp_cards = sample[:opp_needed]
-        full_board = board + sample[opp_needed:]
+        if bias > 0.0 and random.random() < bias:
+            cand: list[int] | None = None
+            for _try in range(40):
+                c = random.sample(remaining, sample_size)
+                if hand_fn(c[0], c[1]):
+                    cand = c
+                    break
+            if cand is None:
+                cand = random.sample(remaining, sample_size)
+            opp_cards = cand[:opp_needed]
+            full_board = board + cand[opp_needed:]
+        else:
+            sample = random.sample(remaining, sample_size)
+            opp_cards = sample[:opp_needed]
+            full_board = board + sample[opp_needed:]
 
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in full_board]
 
-        my_rank = evaluate_hand(my_treys, board_treys)
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        my_rank = evaluate_short_deck_hand(my_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
 
         if my_rank < opp_rank:
             wins += 1
             if return_nut_fraction:
-                rc = _evaluator.get_rank_class(my_rank)
+                rc = _evaluator.get_rank_class(evaluate_hand(my_treys, board_treys))
                 if rc <= 4:  # flush or better
                     nut_wins += 1
         total += 1
@@ -259,8 +361,8 @@ def compute_equity_vs_flush_draw(
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in full_board]
 
-        my_rank = evaluate_hand(my_treys, board_treys)
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        my_rank = evaluate_short_deck_hand(my_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
 
         if my_rank < opp_rank:
             wins += 1
@@ -333,8 +435,8 @@ def compute_equity_vs_board_pair(
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in full_board]
 
-        my_rank = evaluate_hand(my_treys, board_treys)
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        my_rank = evaluate_short_deck_hand(my_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
 
         if my_rank < opp_rank:
             wins += 1
@@ -406,8 +508,8 @@ def compute_equity_vs_straight_draw(
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in full_board]
 
-        my_rank = evaluate_hand(my_treys, board_treys)
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        my_rank = evaluate_short_deck_hand(my_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
 
         if my_rank < opp_rank:
             wins += 1
@@ -418,36 +520,13 @@ def compute_equity_vs_straight_draw(
     return wins / total
 
 
-def compute_equity_best2_of5(
-    five_cards: list[int],
-    num_simulations: int = 300,
-) -> float:
-    """
-    Preflop equity: best 2 of 5 cards vs random opponent.
-
-    For each trial we sample one random board and one random opponent hand.
-    We evaluate all 10 possible 2-card hands from our 5; we count a win if
-    the best of those 10 beats the opponent on that board.
-
-    Parameters
-    ----------
-    five_cards : list[int]
-        Our 5 hole cards (0-26 encoding).
-    num_simulations : int
-        Number of random roll-outs.
-
-    Returns
-    -------
-    float in [0, 1] – estimated probability of winning with best 2 of 5.
-    """
-    if len(five_cards) != 5:
-        return 0.5
-    known = set(five_cards)
+def _equity_best2_of5_impl(five_cards: tuple[int, ...], num_simulations: int) -> float:
+    fc = list(five_cards)
+    known = set(fc)
     remaining = [i for i in range(DECK_SIZE) if i not in known]
     if len(remaining) < 7:
         return 0.5
-    # Pre-convert all 5 to treys; build list of (i,j) pairs for best-2
-    treys_5 = [int_to_treys(c) for c in five_cards]
+    treys_5 = [int_to_treys(c) for c in fc]
     pairs = [(i, j) for i in range(5) for j in range(i + 1, 5)]
     wins = 0
     total = 0
@@ -457,9 +536,9 @@ def compute_equity_best2_of5(
         full_board = sample[2:]
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in full_board]
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
         best_my_rank = min(
-            evaluate_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
+            evaluate_short_deck_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
         )
         if best_my_rank < opp_rank:
             wins += 1
@@ -469,21 +548,29 @@ def compute_equity_best2_of5(
     return wins / total
 
 
-def _plausible_preflop_raise_hand(c1: int, c2: int) -> bool:
-    """
-    Crude filter: hands that often open/raise in short-deck HU (not full GTO).
+@lru_cache(maxsize=100_000)
+def _preflop_best2_equity_cached(cards_key: tuple[int, ...]) -> float:
+    """Fixed 450-sim preflop equity; keyed by sorted 5-card set."""
+    return _equity_best2_of5_impl(cards_key, 450)
 
-    Keeps pairs, suited cards, or at least one high card (6+ in 23456789A).
+
+def compute_equity_best2_of5(
+    five_cards: list[int],
+    num_simulations: int = 300,
+) -> float:
     """
-    r1, r2 = c1 % len(RANKS), c2 % len(RANKS)
-    s1, s2 = c1 // len(RANKS), c2 // len(RANKS)
-    if r1 == r2:
-        return True
-    if s1 == s2:
-        return True
-    if max(r1, r2) >= 4:  # 6 or better
-        return True
-    return False
+    Preflop equity: best 2 of 5 cards vs random opponent.
+
+    Hot path uses an LRU cache (450 simulations) so repeated preflop spots
+    do not re-run Monte Carlo. ``num_simulations`` is only used when it
+    differs from the cached canonical run (rare / testing).
+    """
+    if len(five_cards) != 5:
+        return 0.5
+    key = tuple(sorted(five_cards))
+    if num_simulations == 450:
+        return _preflop_best2_equity_cached(key)
+    return _equity_best2_of5_impl(key, num_simulations)
 
 
 def compute_equity_best2_of5_vs_raise_shape(
@@ -527,9 +614,58 @@ def compute_equity_best2_of5_vs_raise_shape(
             board_sample = cand[2:]
         opp_treys = [int_to_treys(c) for c in opp_cards]
         board_treys = [int_to_treys(c) for c in board_sample]
-        opp_rank = evaluate_hand(opp_treys, board_treys)
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
         best_my_rank = min(
-            evaluate_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
+            evaluate_short_deck_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
+        )
+        if best_my_rank < opp_rank:
+            wins += 1
+        total += 1
+    if total == 0:
+        return 0.5
+    return wins / total
+
+
+def compute_equity_best2_of5_vs_shove_top15(
+    five_cards: list[int],
+    num_simulations: int = 300,
+    *,
+    max_resample: int = 40,
+) -> float:
+    """
+    Best 2 of 5 vs opponent on a narrow shoving range (~top 15% of hands).
+
+    Used with pot odds when facing large preflop jams (replaces linear per-chip penalties).
+    """
+    if len(five_cards) != 5:
+        return 0.5
+    known = set(five_cards)
+    remaining = [i for i in range(DECK_SIZE) if i not in known]
+    if len(remaining) < 7:
+        return 0.5
+    treys_5 = [int_to_treys(c) for c in five_cards]
+    pairs = [(i, j) for i in range(5) for j in range(i + 1, 5)]
+    wins = 0
+    total = 0
+    for _ in range(num_simulations):
+        opp_cards: list[int] | None = None
+        board_sample: list[int] = []
+        for _try in range(max_resample):
+            cand = random.sample(remaining, 7)
+            o0, o1 = cand[0], cand[1]
+            if _shove_top15_preflop_hand(o0, o1):
+                opp_cards = [o0, o1]
+                board_sample = cand[2:]
+                break
+        if opp_cards is None:
+            cand = random.sample(remaining, 7)
+            opp_cards = cand[:2]
+            board_sample = cand[2:]
+        opp_treys = [int_to_treys(c) for c in opp_cards]
+        board_treys = [int_to_treys(c) for c in board_sample]
+        opp_rank = evaluate_short_deck_hand(opp_treys, board_treys)
+        best_my_rank = min(
+            evaluate_short_deck_hand([treys_5[i], treys_5[j]], board_treys) for i, j in pairs
         )
         if best_my_rank < opp_rank:
             wins += 1

@@ -187,16 +187,25 @@ class OpponentRangeModel:
         self._current_confidence: float = 0.0
         self._history: list[float] = []
 
-    def update_from_discards(self, discards: list[int]) -> None:
+    def update_from_discards(
+        self,
+        discards: list[int],
+        preflop_action_strength: float = 0.5,
+    ) -> None:
         """
         Call when we see opponent's 3 discards (e.g. after discard phase).
-        Low quality -> strong range; high quality -> weak range.
+
+        ``preflop_action_strength`` in [0, 1]: higher = they showed more aggression
+        pre-flop (opens, 3-bets). Blended with discard quality so a 3-bet line that
+        dumps high cards still reads as a strong kept range (e.g. pairs), not a
+        sudden switch to trash.
         """
         if len(discards) != 3:
             return
         quality = discard_quality(discards)
         self._history.append(quality)
-        self._current_strength = 1.0 - quality
+        pa = max(0.0, min(1.0, preflop_action_strength))
+        self._current_strength = (pa * 0.7) + ((1.0 - quality) * 0.3)
         self._current_confidence = min(1.0, len(self._history) * 0.15)
 
     def new_hand(self) -> None:

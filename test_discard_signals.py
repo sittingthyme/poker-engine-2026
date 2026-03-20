@@ -11,7 +11,7 @@ import sys
 from collections import Counter
 from submission.opponent_range import analyze_opponent_discards, DiscardSignals
 from submission.equity import (
-    int_to_treys, evaluate_hand, _flush_draw_strength,
+    int_to_treys, evaluate_short_deck_hand, _flush_draw_strength,
     _straight_draw_strength_with_board, _rank_index,
 )
 
@@ -56,7 +56,7 @@ def _best_keep(hole5: list[int], board: list[int]) -> tuple[list[int], list[int]
             total_rank = 0
             for sb in sample_boards:
                 board_treys = [int_to_treys(c) for c in sb[:5]]
-                total_rank += evaluate_hand(hand_treys, board_treys)
+                total_rank += evaluate_short_deck_hand(hand_treys, board_treys)
             if total_rank < best_rank:
                 best_rank = total_rank
                 best_pair = (i, j)

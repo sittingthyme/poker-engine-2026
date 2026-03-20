@@ -35,6 +35,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from gym_env import PokerEnv  # noqa: E402
 
+from submission.abstract_state import abstract_state_key
 from submission.equity import best_discard, compute_equity
 
 _DEBUG_LOG_PATH = "/Users/nicholasng/Documents/GitHub/poker-engine-2026/.cursor/debug-a2906f.log"
@@ -175,40 +176,6 @@ def sample_action(rng: random.Random, probs: dict[AbstractAction, float]) -> Abs
         if r <= 0:
             return a
     return "call"
-
-
-def abstract_state_key(*, street: int, in_position: bool, pot: int, continue_cost: int, equity: float) -> str:
-    """
-    Must match `_abstract_state_key` in `submission/strategy.py`.
-    """
-    pos = 1 if in_position else 0
-
-    if pot < 10:
-        pot_band = 0
-    elif pot < 50:
-        pot_band = 1
-    else:
-        pot_band = 2
-
-    if continue_cost <= 0:
-        cost_band = 0
-    elif continue_cost <= 5:
-        cost_band = 1
-    else:
-        cost_band = 2
-
-    if equity < 0.20:
-        eq_band = 0
-    elif equity < 0.40:
-        eq_band = 1
-    elif equity < 0.60:
-        eq_band = 2
-    elif equity < 0.78:
-        eq_band = 3
-    else:
-        eq_band = 4
-
-    return f"s{street}_p{pos}_pb{pot_band}_cb{cost_band}_eb{eq_band}"
 
 
 def box_muller_gauss(rng: random.Random, sigma: float) -> float:

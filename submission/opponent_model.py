@@ -22,6 +22,9 @@ class _StreetStats:
     calls: int = 0
     checks: int = 0
     total_raise_amount: int = 0
+    # Per-action exponential moving averages (react faster than cumulative rates).
+    ema_fold: float | None = None
+    ema_raise: float | None = None
     
     # Enhanced tracking: bet sizing patterns
     small_raises: int = 0  # 30-50% of pot
@@ -36,11 +39,17 @@ class _StreetStats:
 
     @property
     def fold_rate(self) -> float:
-        return self.folds / self.actions if self.actions else 0.0
+        base = self.folds / self.actions if self.actions else 0.0
+        if self.ema_fold is not None and self.actions >= 6:
+            return self.ema_fold
+        return base
 
     @property
     def raise_rate(self) -> float:
-        return self.raises / self.actions if self.actions else 0.0
+        base = self.raises / self.actions if self.actions else 0.0
+        if self.ema_raise is not None and self.actions >= 6:
+            return self.ema_raise
+        return base
 
     @property
     def avg_raise_size(self) -> float:
@@ -68,8 +77,8 @@ class _StreetStats:
             return 0.0
         return self.total_raise_amount / self.total_pot_size
 
-    def update_recent_trends(self, fold_rate: float, aggression: float, decay: float = 0.7):
-        """Update recent trends with exponential decay."""
+    def update_recent_trends(self, fold_rate: float, aggression: float, decay: float = 0.82):
+        """Update recent trends with exponential decay (recent hands weighted more)."""
         if self.recent_actions == 0:
             self.recent_fold_rate = fold_rate
             self.recent_aggression = aggression
@@ -77,6 +86,17 @@ class _StreetStats:
             self.recent_fold_rate = decay * self.recent_fold_rate + (1 - decay) * fold_rate
             self.recent_aggression = decay * self.recent_aggression + (1 - decay) * aggression
         self.recent_actions += 1
+
+    def touch_ema(self, action_name: str, *, alpha: float = 0.14) -> None:
+        """EMA of per-action fold / raise indicators (faster adaptation to style shifts)."""
+        fold_i = 1.0 if action_name == "FOLD" else 0.0
+        raise_i = 1.0 if action_name == "RAISE" else 0.0
+        if self.ema_fold is None:
+            self.ema_fold = fold_i
+            self.ema_raise = raise_i
+        else:
+            self.ema_fold = alpha * fold_i + (1.0 - alpha) * self.ema_fold
+            self.ema_raise = alpha * raise_i + (1.0 - alpha) * self.ema_raise
 
 
 class OpponentModel:
@@ -195,10 +215,14 @@ class OpponentModel:
             self.overall.checks += 1
             if pot_size > 0:
                 pot_bucket.checks += 1
+
+        bucket.touch_ema(action_name)
+        self.overall.touch_ema(action_name)
         
-        # Update recent trends after recording action
+        # Update recent trends after recording action (use raw rates, not EMA-smoothed queries)
         if bucket.actions > 0:
-            bucket.update_recent_trends(bucket.fold_rate, bucket.aggression_factor)
+            raw_fr = bucket.folds / bucket.actions
+            bucket.update_recent_trends(raw_fr, bucket.aggression_factor)
 
     def record_response_to_our_bet(
         self,
