@@ -250,7 +250,7 @@ class PlayerAgent(Agent):
         if street <= 1:
             base_sims = 600  # Pre-flop/flop
         elif street == 2:
-            base_sims = 750  # Turn
+            base_sims = 700  # Turn
         else:
             base_sims = 850  # River: most critical
 
@@ -284,32 +284,39 @@ class PlayerAgent(Agent):
             # (uniform random villain massively over-calls weak 5-card bundles).
             my_bet = obs.get("my_bet", 0)
             opp_bet = obs.get("opp_bet", 0)
+            # Only blend vs a real raise (opp beyond BB). SB paying 1 chip to complete
+            # (my_bet=1, opp_bet=2) is not a raise — blending inflated equity and caused
+            # constant SB raises / no folds in logs.
             if opp_bet > my_bet and opp_bet > 2:
                 eq_raise = compute_equity_best2_of5_vs_raise_shape(
                     my_cards, num_simulations=n_sims
                 )
-                w = 0.55
+                w = 0.60
                 adapted = self.opp_model.hands_seen >= MIN_HANDS_FOR_ADAPT
                 if adapted:
                     if self.opp_model.is_tight():
-                        w += 0.10
+                        w += 0.08
                     elif self.opp_model.is_loose():
-                        w -= 0.08
+                        w -= 0.05
                     sb0 = self.opp_model.streets[0]
                     if sb0.raises >= 8 and sb0.actions > 0:
                         rr = sb0.raises / sb0.actions
-                        if rr > 0.35:
+                        if rr > 0.30:
                             w += 0.05
                 w = max(0.40, min(0.72, w))
                 equity = (1.0 - w) * equity + w * eq_raise
+
         else:
+            # Post-flop (or non–5-card preflop): base equity on kept hole cards vs random villain
+            _md = self._my_discarded if self._my_discarded else None
             equity = compute_equity(
                 my_cards[:2],
                 community,
                 opp_discarded=opp_disc if opp_disc else None,
-                my_discarded=self._my_discarded if self._my_discarded else None,
+                my_discarded=_md,
                 num_simulations=n_sims,
             )
+
 
         # Post-flop: discard signals → range-based equity blend
         if street >= 1 and len(opp_disc) == 3 and len(community) >= 3:
