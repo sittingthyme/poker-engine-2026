@@ -25,7 +25,6 @@ from submission.opponent_model import OpponentModel
 from submission.opponent_range import OpponentRangeModel, analyze_opponent_discards
 from submission.strategy import (
     MIN_HANDS_FOR_ADAPT,
-    PREFLOP_SHOVE_POT_ODDS_MIN_BET,
     BANDIT_REVIEW_INTERVAL,
     StrategyBandit,
     decide_action,
@@ -59,8 +58,10 @@ class PlayerAgent(Agent):
         self._opp_postflop_raise_events: list[int] = []
         self._opp_postflop_reraise_events: list[int] = []
         self._opp_high_commit_pressure_events: list[int] = []
+        self._opp_turn_raise_events: list[int] = []
         # After we RAISE, next observe records opponent response for fold_to_big_bet / call_small_bet.
         self._pending_response_to_our_bet: tuple[int, float] | None = None
+        self._last_sims_log_hand: int | None = None  # one [SIMS] line per hand in production
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -208,20 +209,24 @@ class PlayerAgent(Agent):
             self.opp_model.record_action(street, opp_action_name, raise_amount=raise_amt, pot_size=pot_size)
             if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
                 self._opp_postflop_raise_events.append(1 if opp_action_name == "RAISE" else 0)
-                if len(self._opp_postflop_raise_events) > 60:
-                    self._opp_postflop_raise_events = self._opp_postflop_raise_events[-60:]
+                if len(self._opp_postflop_raise_events) > 40:
+                    self._opp_postflop_raise_events = self._opp_postflop_raise_events[-40:]
             if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
                 is_reraise = opp_action_name == "RAISE" and observation.get("my_bet", 0) > 0
                 self._opp_postflop_reraise_events.append(1 if is_reraise else 0)
-                if len(self._opp_postflop_reraise_events) > 60:
-                    self._opp_postflop_reraise_events = self._opp_postflop_reraise_events[-60:]
+                if len(self._opp_postflop_reraise_events) > 40:
+                    self._opp_postflop_reraise_events = self._opp_postflop_reraise_events[-40:]
                 high_commit_pressure = (
                     opp_action_name == "RAISE"
                     and max(observation.get("my_bet", 0), observation.get("opp_bet", 0)) >= 50
                 )
                 self._opp_high_commit_pressure_events.append(1 if high_commit_pressure else 0)
-                if len(self._opp_high_commit_pressure_events) > 60:
-                    self._opp_high_commit_pressure_events = self._opp_high_commit_pressure_events[-60:]
+                if len(self._opp_high_commit_pressure_events) > 40:
+                    self._opp_high_commit_pressure_events = self._opp_high_commit_pressure_events[-40:]
+            if street == 2 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
+                self._opp_turn_raise_events.append(1 if opp_action_name == "RAISE" else 0)
+                if len(self._opp_turn_raise_events) > 30:
+                    self._opp_turn_raise_events = self._opp_turn_raise_events[-30:]
 
         if terminated:
             self.opp_model.end_hand()
@@ -263,8 +268,9 @@ class PlayerAgent(Agent):
         time_limit = total if total > 0 else 1000.0  # Phase 2 default
         time_ratio = time_left / time_limit if time_limit > 0 else 1.0
 
-        # Base discard simulations (evaluating 10 pairs, so each pair gets sims_per_pair)
-        base_sims = 800  # Equity-first selection: higher sims for reliable equity ranking
+        # Base discard simulations — keep modest to avoid time forfeits (was 800).
+        BASE_SIMS_DISCARD = 80
+        base_sims = BASE_SIMS_DISCARD
 
         # Apply time scaling
         if time_ratio < 0.30:
@@ -276,7 +282,7 @@ class PlayerAgent(Agent):
         else:
             time_multiplier = 1.0
 
-        sims_per_pair = max(100, int(base_sims * time_multiplier))
+        sims_per_pair = max(80, int(base_sims * time_multiplier))
 
         keep_i, keep_j, eq = best_discard(
             my_cards, community, opp_discarded=opp_disc if opp_disc else None,
@@ -309,6 +315,9 @@ class PlayerAgent(Agent):
                 info["bankroll_1"] = self._my_cumulative_reward
         if info.get("hand_number") is None and hand_num is not None:
             info["hand_number"] = hand_num
+        info["opp_preflop_raise_rate"] = float(self.opp_model.preflop_raise_rate)
+        info["opp_preflop_fold_rate"] = float(self.opp_model.preflop_fold_rate)
+        info["opp_river_raise_rate"] = float(self.opp_model.river_raise_rate)
         if self._recent_hand_deltas:
             info["recent_delta_10"] = float(sum(self._recent_hand_deltas[-10:]))
             info["recent_delta_30"] = float(sum(self._recent_hand_deltas[-30:]))
@@ -320,6 +329,11 @@ class PlayerAgent(Agent):
             info["opp_postflop_raise_density"] = float(sum(window) / len(window))
         else:
             info["opp_postflop_raise_density"] = 0.0
+        if self._opp_turn_raise_events:
+            tw = self._opp_turn_raise_events[-30:]
+            info["opp_turn_raise_density"] = float(sum(tw) / len(tw))
+        else:
+            info["opp_turn_raise_density"] = 0.0
         if self._opp_postflop_reraise_events:
             rw = self._opp_postflop_reraise_events[-24:]
             info["opp_postflop_reraise_density"] = float(sum(rw) / len(rw))
@@ -371,13 +385,20 @@ class PlayerAgent(Agent):
             n_sims = int(base_sims * pot_multiplier * time_multiplier)
             n_sims = max(100, min(n_sims, 1200))
 
+        _log_hn = int(info.get("hand_number") or hand_num or 0)
+        if _log_hn > 0 and self._last_sims_log_hand != _log_hn:
+            self._last_sims_log_hand = _log_hn
+            print(f"[SIMS] street={street} n_sims={n_sims} ratio={time_ratio:.2f}")
+
         # Preflop: use best 2 of 5 equity; post-flop: use our 2 kept cards
         if street == 0 and len(my_cards) == 5:
             # Cached 450-sim preflop equity (no live MC on every decision).
             equity = compute_equity_best2_of5(my_cards, num_simulations=450)
             my_bet = obs.get("my_bet", 0)
             opp_bet = obs.get("opp_bet", 0)
-            if opp_bet > my_bet and opp_bet >= PREFLOP_SHOVE_POT_ODDS_MIN_BET:
+            _pf_cc = max(0, opp_bet - my_bet)
+            # Shove-range MC for small+ jams (4+ chips — covers ~6-chip shove bots).
+            if opp_bet > my_bet and _pf_cc >= 4:
                 info["preflop_equity_vs_shove"] = compute_equity_best2_of5_vs_shove_top15(
                     my_cards, num_simulations=min(n_sims, 300)
                 )
@@ -422,6 +443,7 @@ class PlayerAgent(Agent):
             info["opp_flush_signal"] = sig.opp_flush_signal
             info["opp_discarded_pair"] = sig.opp_discarded_pair
             info["opp_likely_has_pair"] = sig.opp_likely_has_pair
+            info["opp_likely_has_full_house"] = sig.opp_likely_has_full_house
             info["opp_straight_signal"] = sig.opp_straight_signal
             info["opp_kept_high_cards"] = sig.opp_kept_high_cards
             info["opp_kept_high_flush"] = sig.opp_kept_high_flush

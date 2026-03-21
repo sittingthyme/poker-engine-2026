@@ -11,6 +11,7 @@ RANKS = "23456789A", SUITS = "dhs" (3 suits, 9 cards each)
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 _RANKS = "23456789A"
@@ -44,6 +45,7 @@ class DiscardSignals:
     # Pair signals
     opp_discarded_pair: bool = False    # a pair among the 3 discards
     opp_likely_has_pair: bool = False   # kept a card matching a board rank
+    opp_likely_has_full_house: bool = False  # paired board + no board-rank discards → boat danger
 
     # Strength signals
     opp_kept_high_cards: bool = False   # discarded low cards → kept high
@@ -83,7 +85,6 @@ def analyze_opponent_discards(
     sig.discard_quality = 0.6 * rank_sum + 0.2 * suited_bonus + 0.2 * connected_bonus
 
     # --- Pair in discards ---
-    from collections import Counter
     d_rank_counts = Counter(d_ranks)
     sig.opp_discarded_pair = any(cnt >= 2 for cnt in d_rank_counts.values())
 
@@ -92,6 +93,22 @@ def analyze_opponent_discards(
     discarded_board_matches = sum(1 for r in d_ranks if r in board_rank_set)
     if board_rank_set and discarded_board_matches == 0:
         sig.opp_likely_has_pair = True
+
+    board_rank_counts = Counter(b_ranks)
+    paired_board_ranks = {r for r, cnt in board_rank_counts.items() if cnt >= 2}
+    if paired_board_ranks and len(discards) == 3:
+        discarded_board_ranks = {r for r in d_ranks if r in set(b_ranks)}
+        discarded_paired_ranks = discarded_board_ranks & paired_board_ranks
+
+        if len(discarded_board_ranks) == 0:
+            # Classic: no board-rank cards discarded
+            sig.opp_likely_has_full_house = True
+        elif len(discarded_board_ranks) == 1 and not discarded_paired_ranks:
+            # One board-rank discard, but not the paired rank → still hold both pair cards
+            sig.opp_likely_has_full_house = True
+        else:
+            # Discarded the paired rank (and/or multiple board ranks) → trips / pair, not FH
+            sig.opp_likely_has_pair = True
 
     # --- Flush signals (board-relative) ---
     # In a 3-suit deck, flush draws are very common and powerful.
@@ -117,6 +134,9 @@ def analyze_opponent_discards(
                 sig.opp_flush_signal = 2  # very likely kept suited
             else:
                 sig.opp_flush_signal = 1  # possible
+        elif danger_in_discards == 1 and board_danger_count >= 3:
+            # Discarded one of the suit but still kept 2 suited on a 3+ flush board.
+            sig.opp_flush_signal = 1
         # If they discarded 2+ of the danger suit, they gave up on flush
         # (not very useful on its own, but good combined with other signals)
 
@@ -154,6 +174,8 @@ def analyze_opponent_discards(
             sig.straight_helping_ranks = straight_helping_ranks
             helpers_discarded = sum(1 for r in d_ranks if r in straight_helping_ranks)
             if helpers_discarded == 0 and len(straight_helping_ranks) >= 2:
+                sig.opp_straight_signal = 2
+            elif helpers_discarded <= 1 and len(straight_helping_ranks) >= 4:
                 sig.opp_straight_signal = 2
             elif helpers_discarded <= 1 and board_span <= 4:
                 sig.opp_straight_signal = max(sig.opp_straight_signal, 1)

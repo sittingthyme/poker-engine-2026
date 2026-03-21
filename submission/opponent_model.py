@@ -130,6 +130,13 @@ class OpponentModel:
         self._discard_quality_sum: float = 0.0
         self._discard_count: int = 0
 
+        # Explicit preflop / river counters (simple rates for strategy info)
+        self._preflop_raises: int = 0
+        self._preflop_folds: int = 0
+        self._preflop_actions: int = 0
+        self._river_raises: int = 0
+        self._river_actions: int = 0
+
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
@@ -218,6 +225,17 @@ class OpponentModel:
 
         bucket.touch_ema(action_name)
         self.overall.touch_ema(action_name)
+
+        if street == 0:
+            self._preflop_actions += 1
+            if action_name == "RAISE":
+                self._preflop_raises += 1
+            elif action_name == "FOLD":
+                self._preflop_folds += 1
+        if street == 3:
+            self._river_actions += 1
+            if action_name == "RAISE":
+                self._river_raises += 1
         
         # Update recent trends after recording action (use raw rates, not EMA-smoothed queries)
         if bucket.actions > 0:
@@ -274,6 +292,25 @@ class OpponentModel:
         actions = sum(self.streets[s].actions for s in (1, 2, 3))
         return folds / actions if actions else 0.0
 
+    @property
+    def preflop_fold_rate(self) -> float:
+        """Fold frequency on preflop street only (simple count rate)."""
+        return self._preflop_folds / max(1, self._preflop_actions)
+
+    @property
+    def preflop_raise_rate(self) -> float:
+        """Fraction of preflop actions that are raises (opens / jams)."""
+        return self._preflop_raises / max(1, self._preflop_actions)
+
+    def avg_preflop_raise_fraction(self) -> float:
+        """Average raise size as fraction of pot on preflop (same as avg_raise_fraction(0))."""
+        return self.avg_raise_fraction(0)
+
+    @property
+    def river_raise_rate(self) -> float:
+        """Raises as a fraction of all river actions (folds included in denominator)."""
+        return self._river_raises / max(1, self._river_actions)
+
     def postflop_actions_count(self) -> int:
         return sum(self.streets[s].actions for s in (1, 2, 3))
 
@@ -317,7 +354,21 @@ class OpponentModel:
             return False
         prr = self.postflop_raise_action_rate()
         avg_frac = self.postflop_avg_raise_fraction()
-        return prr > 0.35 and avg_frac > 0.65
+        return prr > 0.35 and avg_frac > 0.55
+
+    def is_straight_hunter(self) -> bool:
+        """
+        Calls wide preflop, rarely folds postflop — signature of keeping connectors
+        and chasing straights (e.g. high VPIP / low fold, discard-phase connectivity).
+        """
+        if self._hands_seen < 30:
+            return False
+        s0 = self.streets[0]
+        if s0.actions < 20:
+            return False
+        if self.postflop_actions_count() < 15:
+            return False
+        return self.preflop_fold_rate < 0.12 and self.postflop_fold_rate() < 0.15
 
     def is_preflop_shove_heavy(self) -> bool:
         """
