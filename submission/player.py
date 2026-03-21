@@ -23,7 +23,13 @@ from submission.equity import (
 )
 from submission.opponent_model import OpponentModel
 from submission.opponent_range import OpponentRangeModel, analyze_opponent_discards
-from submission.strategy import MIN_HANDS_FOR_ADAPT, PREFLOP_SHOVE_POT_ODDS_MIN_BET, decide_action
+from submission.strategy import (
+    MIN_HANDS_FOR_ADAPT,
+    PREFLOP_SHOVE_POT_ODDS_MIN_BET,
+    BANDIT_REVIEW_INTERVAL,
+    StrategyBandit,
+    decide_action,
+)
 
 
 class PlayerAgent(Agent):
@@ -35,6 +41,8 @@ class PlayerAgent(Agent):
         self.opp_model = OpponentModel()
         self.opp_range = OpponentRangeModel()
         self._preflop_opp_max_bet: int = 0
+        self._bandit = StrategyBandit()
+        self._bandit_interval_start_hand: int = -1  # -1 = not yet seeded
 
         # Per-hand bookkeeping
         self._current_hand: int | None = None
@@ -51,6 +59,8 @@ class PlayerAgent(Agent):
         self._opp_postflop_raise_events: list[int] = []
         self._opp_postflop_reraise_events: list[int] = []
         self._opp_high_commit_pressure_events: list[int] = []
+        # After we RAISE, next observe records opponent response for fold_to_big_bet / call_small_bet.
+        self._pending_response_to_our_bet: tuple[int, float] | None = None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -92,6 +102,34 @@ class PlayerAgent(Agent):
             self.opp_model.new_hand()
             self.opp_range.new_hand()
             self._preflop_opp_max_bet = 0
+            self._pending_response_to_our_bet = None
+
+            # Meta-controller: UCB1 strategy bandit.
+            if self._bandit_interval_start_hand < 0:
+                # First hand of the match — seed the bandit.
+                self._bandit.select_strategy()
+                self._bandit.begin_interval(self._my_cumulative_reward)
+                self._bandit_interval_start_hand = hand_num
+                self.logger.info(
+                    "Bandit initialised – %s", self._bandit.summary()
+                )
+            else:
+                hands_in_interval = hand_num - self._bandit_interval_start_hand
+                if hands_in_interval >= BANDIT_REVIEW_INTERVAL:
+                    delta = self._bandit.end_interval(
+                        self._my_cumulative_reward,
+                        hands_in_interval,
+                    )
+                    self._bandit.select_strategy()
+                    self._bandit.begin_interval(self._my_cumulative_reward)
+                    self._bandit_interval_start_hand = hand_num
+                    self.logger.info(
+                        "Bandit review (hand %d, delta=%+.0f, ~%+.2f/hand) – %s",
+                        hand_num,
+                        delta,
+                        delta / max(1, hands_in_interval),
+                        self._bandit.summary(),
+                    )
             # Detect blind position from the first observation of the hand.
             # Street 0 start: SB posts 1, BB posts 2.
             my_bet = observation.get("my_bet", 0)
@@ -122,10 +160,25 @@ class PlayerAgent(Agent):
 
         # ---- Discard phase (mandatory on flop) ----
         if valid[self.action_types.DISCARD.value]:
+            self._pending_response_to_our_bet = None
             return self._do_discard(observation)
 
         # ---- Betting phase ----
-        return self._do_bet(observation, info, hand_num)
+        action = self._do_bet(observation, info, hand_num)
+        if action[0] == self.action_types.RAISE.value:
+            street = int(observation.get("street", 0))
+            pot = float(
+                observation.get(
+                    "pot_size",
+                    observation.get("my_bet", 0) + observation.get("opp_bet", 0),
+                )
+            )
+            amt = int(action[1])
+            frac = amt / max(1.0, pot)
+            self._pending_response_to_our_bet = (street, min(2.0, max(0.0, frac)))
+        else:
+            self._pending_response_to_our_bet = None
+        return action
 
     def observe(self, observation, reward, terminated, truncated, info):
         """
@@ -135,6 +188,13 @@ class PlayerAgent(Agent):
         self._my_cumulative_reward += float(reward)
         # Track opponent action from the extra field injected by the engine
         opp_action_name = observation.get("opp_last_action", "None")
+        if self._pending_response_to_our_bet is not None and opp_action_name not in (
+            "None",
+            None,
+        ):
+            st, frac = self._pending_response_to_our_bet
+            self.opp_model.record_response_to_our_bet(st, str(opp_action_name), frac)
+            self._pending_response_to_our_bet = None
         if opp_action_name not in ("None", None):
             street = observation.get("street", 0)
             if street == 0:
@@ -148,20 +208,20 @@ class PlayerAgent(Agent):
             self.opp_model.record_action(street, opp_action_name, raise_amount=raise_amt, pot_size=pot_size)
             if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
                 self._opp_postflop_raise_events.append(1 if opp_action_name == "RAISE" else 0)
-                if len(self._opp_postflop_raise_events) > 120:
-                    self._opp_postflop_raise_events = self._opp_postflop_raise_events[-120:]
+                if len(self._opp_postflop_raise_events) > 60:
+                    self._opp_postflop_raise_events = self._opp_postflop_raise_events[-60:]
             if street >= 1 and opp_action_name in ("RAISE", "CALL", "CHECK", "FOLD"):
                 is_reraise = opp_action_name == "RAISE" and observation.get("my_bet", 0) > 0
                 self._opp_postflop_reraise_events.append(1 if is_reraise else 0)
-                if len(self._opp_postflop_reraise_events) > 120:
-                    self._opp_postflop_reraise_events = self._opp_postflop_reraise_events[-120:]
+                if len(self._opp_postflop_reraise_events) > 60:
+                    self._opp_postflop_reraise_events = self._opp_postflop_reraise_events[-60:]
                 high_commit_pressure = (
                     opp_action_name == "RAISE"
                     and max(observation.get("my_bet", 0), observation.get("opp_bet", 0)) >= 50
                 )
                 self._opp_high_commit_pressure_events.append(1 if high_commit_pressure else 0)
-                if len(self._opp_high_commit_pressure_events) > 120:
-                    self._opp_high_commit_pressure_events = self._opp_high_commit_pressure_events[-120:]
+                if len(self._opp_high_commit_pressure_events) > 60:
+                    self._opp_high_commit_pressure_events = self._opp_high_commit_pressure_events[-60:]
 
         if terminated:
             self.opp_model.end_hand()
@@ -364,6 +424,7 @@ class PlayerAgent(Agent):
             info["opp_likely_has_pair"] = sig.opp_likely_has_pair
             info["opp_straight_signal"] = sig.opp_straight_signal
             info["opp_kept_high_cards"] = sig.opp_kept_high_cards
+            info["opp_kept_high_flush"] = sig.opp_kept_high_flush
 
             range_sims = min(n_sims // 2, 400)
             _disc = self._my_discarded if self._my_discarded else None
@@ -377,7 +438,9 @@ class PlayerAgent(Agent):
                     opp_discarded=opp_disc, my_discarded=_disc,
                     num_simulations=range_sims,
                 )
-                equity = 0.6 * equity + 0.4 * eq_vs_range
+                # Stronger blend vs flush-made range when discard read is clear (was 0.4 / 0.6).
+                blend_w = 0.75 if sig.opp_kept_high_flush else 0.55
+                equity = (1.0 - blend_w) * equity + blend_w * eq_vs_range
             elif sig.opp_straight_signal >= 2 and sig.straight_helping_ranks:
                 eq_vs_range = compute_equity_vs_straight_draw(
                     my_cards[:2], community,
@@ -404,7 +467,12 @@ class PlayerAgent(Agent):
 
         info["my_raises_this_street"] = int(self._my_raises_by_street.get(street, 0))
         info["my_raises_this_hand"] = int(self._my_raises_this_hand)
-        action = decide_action(equity, obs, self.opp_model, info=info or {}, hand_rank_class=hand_rank_class)
+        action = decide_action(
+            equity, obs, self.opp_model,
+            info=info or {},
+            hand_rank_class=hand_rank_class,
+            strategy_profile=self._bandit.get_profile(),
+        )
         if action[0] == self.action_types.RAISE.value:
             self._my_raises_by_street[street] = self._my_raises_by_street.get(street, 0) + 1
             self._my_raises_this_hand += 1

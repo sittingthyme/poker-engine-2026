@@ -268,6 +268,69 @@ class OpponentModel:
         bucket = self.streets[street] if street is not None else self.overall
         return bucket.fold_rate
 
+    def postflop_fold_rate(self) -> float:
+        """Fold frequency on flop+ only (excludes preflop mucks that inflate overall fold %)."""
+        folds = sum(self.streets[s].folds for s in (1, 2, 3))
+        actions = sum(self.streets[s].actions for s in (1, 2, 3))
+        return folds / actions if actions else 0.0
+
+    def postflop_actions_count(self) -> int:
+        return sum(self.streets[s].actions for s in (1, 2, 3))
+
+    def is_calling_station_postflop(self) -> bool:
+        """
+        Many villains fold preflop but call down postflop (e.g. pot-odds / MC equity bots).
+        ``overall.fold_rate`` is then misleadingly high for bluff EV.
+        """
+        if self._hands_seen < 15:
+            return False
+        n = self.postflop_actions_count()
+        if n < 25:
+            return False
+        return self.postflop_fold_rate() < 0.22
+
+    def postflop_raise_action_rate(self) -> float:
+        """Fraction of postflop actions that are raises (barrel frequency proxy)."""
+        n = self.postflop_actions_count()
+        if n < 1:
+            return 0.0
+        ra = sum(self.streets[s].raises for s in (1, 2, 3))
+        return ra / n
+
+    def postflop_avg_raise_fraction(self) -> float:
+        """Weighted avg raise size / pot on flop–river (only streets with raises)."""
+        num = 0.0
+        den = 0
+        for s in (1, 2, 3):
+            b = self.streets[s]
+            if b.raises > 0:
+                num += b.avg_raise_fraction * b.raises
+                den += b.raises
+        return num / den if den else 0.0
+
+    def is_hyper_aggressive_postflop(self) -> bool:
+        """Frequent postflop raises with large sizing (barrel / pressure bots)."""
+        if self._hands_seen < 20:
+            return False
+        n = self.postflop_actions_count()
+        if n < 30:
+            return False
+        prr = self.postflop_raise_action_rate()
+        avg_frac = self.postflop_avg_raise_fraction()
+        return prr > 0.35 and avg_frac > 0.65
+
+    def is_preflop_shove_heavy(self) -> bool:
+        """
+        Opponent jams / raises preflop often → large per-hand chip variance.
+        Used to relax fold-to-win (need a bigger nominal lead before chip-dumping).
+        """
+        if self._hands_seen < 20:
+            return False
+        s = self.streets[0]
+        if s.actions < 20:
+            return False
+        return s.raise_rate >= 0.18
+
     def raise_rate(self, street: int | None = None) -> float:
         bucket = self.streets[street] if street is not None else self.overall
         return bucket.raise_rate
@@ -332,6 +395,10 @@ class OpponentModel:
         """Classify opponent as tight (low VPIP, high fold rate)."""
         if self._hands_seen < 12:
             return False  # Not enough data
+        # Preflop folds inflate overall fold rate; do not treat as tight if they
+        # rarely fold once they see a flop.
+        if self.postflop_actions_count() >= 18 and self.postflop_fold_rate() < 0.30:
+            return False
         return self.vpip < 0.40 and self.overall.fold_rate > 0.50
     
     def is_loose(self) -> bool:

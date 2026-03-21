@@ -47,6 +47,7 @@ class DiscardSignals:
 
     # Strength signals
     opp_kept_high_cards: bool = False   # discarded low cards → kept high
+    opp_kept_high_flush: bool = False   # kept high suited cards on flush board (vs low off-suit discards)
     discard_quality: float = 0.5        # 0-1, higher = discarded strong cards
 
 
@@ -118,6 +119,18 @@ def analyze_opponent_discards(
                 sig.opp_flush_signal = 1  # possible
         # If they discarded 2+ of the danger suit, they gave up on flush
         # (not very useful on its own, but good combined with other signals)
+
+        # Kept high flush potential: no discards in danger suit, off-suit discards are low.
+        if sig.opp_flush_signal >= 1:
+            danger_discarded_ranks = [_rank(c) for c in discards if _suit(c) == danger_suit]
+            non_danger_discarded_ranks = [_rank(c) for c in discards if _suit(c) != danger_suit]
+            avg_non_danger = (
+                sum(non_danger_discarded_ranks) / len(non_danger_discarded_ranks)
+                if non_danger_discarded_ranks
+                else 0.0
+            )
+            if len(danger_discarded_ranks) == 0 and avg_non_danger <= 3.0:
+                sig.opp_kept_high_flush = True
 
     # --- Straight signals ---
     # Check if kept cards likely connect to the board for a straight.
